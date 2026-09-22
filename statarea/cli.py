@@ -1,0 +1,206 @@
+"""Interface en ligne de commande.
+
+    python -m statarea scrape --date 2026-09-19          # une seule date
+    python -m statarea scrape --from 2026-09-19 --to 2026-09-22
+    python -m statarea scrape --window 3                 # aujourd'hui +/- 3 jours
+    python -m statarea reparse                           # re-parse les archives, sans reseau
+    python -m statarea show --date 2026-09-19 --limit 20 # inspection
+    python -m statarea report --min-fav 5 --min-dog 5
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+from . import db, report, scraper
+from .parser import ParseError
+from .scraper import FetchError
+
+
+def _add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--db", default=str(db.DEFAULT_DB), help="chemin de la base SQLite")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="statarea", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("scrape", help="telecharge, archive et enregistre une plage de dates")
+    _add_common(p)
+    p.add_argument("--date", help="une seule date YYYY-MM-DD")
+    p.add_argument("--from", dest="start", help="debut de plage YYYY-MM-DD")
+    p.add_argument("--to", dest="end", help="fin de plage YYYY-MM-DD")
+    p.add_argument("--window", type=int, help="aujourd'hui +/- N jours")
+    p.add_argument("--raw-dir", default=str(scraper.RAW_DIR))
+    p.add_argument("--delay", type=float, default=scraper.DEFAULT_DELAY,
+                   help="pause en secondes entre deux pages (defaut: 3)")
+    p.add_argument("--use-cache", action="store_true",
+                   help="relit l'archive locale si elle existe au lieu de retelecharger")
+    p.add_argument("--dry-run", action="store_true",
+                   help="archive et parse mais n'ecrit pas en base")
+
+    p = sub.add_parser("reparse", help="re-parse les archives locales, sans aucune requete")
+    _add_common(p)
+    p.add_argument("--raw-dir", default=str(scraper.RAW_DIR))
+
+    p = sub.add_parser("show", help="affiche les matchs enregistres")
+    _add_common(p)
+    p.add_argument("--date")
+    p.add_argument("--team")
+    p.add_argument("--limit", type=int, default=30)
+
+    p = sub.add_parser("dates", help="couverture de la base, par date")
+    _add_common(p)
+
+    p = sub.add_parser("report", help="classements de fiabilite et d'imprevisibilite")
+    _add_common(p)
+    p.add_argument("--min-fav", type=int, default=5,
+                   help="minimum de matchs en tant que favorite (defaut: 5)")
+    p.add_argument("--min-dog", type=int, default=5,
+                   help="minimum de matchs en tant qu'outsider (defaut: 5)")
+    p.add_argument("--top", type=int, default=15)
+    p.add_argument("--min-margin", type=int, default=0,
+                   help="ne garder que les matchs dont la marge du favori atteint ce seuil")
+    p.add_argument("--since")
+    p.add_argument("--until")
+
+    return parser
+
+
+def _days(args) -> list[str]:
+    if args.date:
+        return [args.date]
+    if args.window is not None:
+        today = date.today()
+        return [(today + timedelta(days=d)).isoformat()
+                for d in range(-args.window, args.window + 1)]
+    if args.start and args.end:
+        return list(scraper.daterange(args.start, args.end))
+    if args.start:
+        return list(scraper.daterange(args.start, date.today().isoformat()))
+    return [date.today().isoformat()]
+
+
+def cmd_scrape(args) -> int:
+    days = _days(args)
+    session = scraper.make_session()
+    conn = db.connect(args.db)
+    total_new = total_upd = 0
+    failures = 0
+
+    print(f"Collecte de {len(days)} date(s), pause de {args.delay}s entre les pages.\n")
+    for i, day in enumerate(days):
+        try:
+            matches = scraper.collect_day(day, session=session, raw_dir=args.raw_dir,
+                                          use_cache=args.use_cache)
+        except (FetchError, ParseError) as exc:
+            print(f"  {day}  ! {exc}")
+            failures += 1
+        else:
+            played = sum(1 for m in matches if m.outcome)
+            if args.dry_run:
+                print(f"  {day}  {len(matches):4} matchs ({played} joues)  [dry-run]")
+            else:
+                new, upd = db.upsert_matches(conn, matches)
+                total_new += new
+                total_upd += upd
+                print(f"  {day}  {len(matches):4} matchs ({played} joues)  "
+                      f"+{new} nouveaux, {upd} completes")
+        if i < len(days) - 1:
+            scraper.sleep_between(args.delay)
+
+    print(f"\nTermine : +{total_new} nouveaux, {total_upd} completes, {failures} echec(s).")
+    print(f"HTML brut archive dans {args.raw_dir}/")
+    return 1 if failures == len(days) else 0
+
+
+def cmd_reparse(args) -> int:
+    conn = db.connect(args.db)
+    total_new = total_upd = 0
+    for day, matches in scraper.reparse_archive(args.raw_dir):
+        if not matches:
+            continue
+        new, upd = db.upsert_matches(conn, matches)
+        total_new += new
+        total_upd += upd
+        print(f"  {day}  {len(matches):4} matchs  +{new} nouveaux, {upd} completes")
+    print(f"\nRe-parse termine : +{total_new} nouveaux, {total_upd} completes.")
+    return 0
+
+
+def cmd_show(args) -> int:
+    conn = db.connect(args.db)
+    where, params = [], []
+    if args.date:
+        where.append("match_date = ?")
+        params.append(args.date)
+    if args.team:
+        where.append("(home LIKE ? OR away LIKE ?)")
+        params += [f"%{args.team}%", f"%{args.team}%"]
+    sql = "SELECT * FROM matches"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY match_date, kickoff LIMIT ?"
+    params.append(args.limit)
+
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        print("Aucun match ne correspond.")
+        return 0
+
+    head = (f"{'date':10} {'h':5} {'pays':12} {'domicile':22} {'exterieur':22} "
+            f"{'tip':4} {'1':>3} {'X':>3} {'2':>3} {'score':6} {'res':3} {'fav':5} "
+            f"{'mrg':>3} {'sur':>3} {'ups':>3} {'hit':>3}")
+    print(head)
+    print("-" * len(head))
+    for r in rows:
+        score = (f"{r['home_score']}-{r['away_score']}"
+                 if r["home_score"] is not None else "-")
+        def f(v): return "-" if v is None else str(v)
+        print(f"{r['match_date']:10} {(r['kickoff'] or ''):5} {(r['country'] or '')[:12]:12} "
+              f"{r['home'][:22]:22} {r['away'][:22]:22} {(r['prediction'] or '-'):4} "
+              f"{f(r['p1']):>3} {f(r['px']):>3} {f(r['p2']):>3} {score:6} "
+              f"{f(r['outcome']):3} {(r['favorite'] or '-')[:5]:5} {f(r['fav_margin']):>3} "
+              f"{f(r['surprise']):>3} {f(r['upset']):>3} {f(r['prediction_hit']):>3}")
+    print(f"\n{len(rows)} ligne(s). fav: equipe favorite | mrg: marge | "
+          f"sur: surprise subie | ups: upset | hit: prediction juste")
+    return 0
+
+
+def cmd_dates(args) -> int:
+    conn = db.connect(args.db)
+    rows = db.dates(conn)
+    if not rows:
+        print("Base vide.")
+        return 0
+    print(f"{'date':12} {'matchs':>8} {'joues':>8}")
+    print("-" * 30)
+    for day, n, played in rows:
+        print(f"{day:12} {n:>8} {played or 0:>8}")
+    print("-" * 30)
+    print(f"{'total':12} {sum(r[1] for r in rows):>8} {sum(r[2] or 0 for r in rows):>8}")
+    return 0
+
+
+def cmd_report(args) -> int:
+    conn = db.connect(args.db)
+    print(report.build_report(conn, min_fav=args.min_fav, min_dog=args.min_dog,
+                              top=args.top, min_margin=args.min_margin,
+                              since=args.since, until=args.until))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return {
+        "scrape": cmd_scrape, "reparse": cmd_reparse, "show": cmd_show,
+        "dates": cmd_dates, "report": cmd_report,
+    }[args.command](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
