@@ -98,6 +98,57 @@ class TestUpsert(unittest.TestCase):
     def setUp(self):
         self.conn = db.connect(":memory:")
 
+    def test_freezes_the_pre_match_prediction(self):
+        """Une revision post-match des pourcentages ne doit pas remonter en base."""
+        db.upsert_matches(self.conn, [_match(prediction="1", p1=60, px=25, p2=15)])
+        # Re-scrape apres le match, avec des pourcentages differents.
+        db.upsert_matches(self.conn, [_match(
+            prediction="2", p1=20, px=25, p2=55, home_score=0, away_score=2)])
+
+        row = self.conn.execute("SELECT * FROM matches").fetchone()
+        self.assertEqual(row["prediction"], "1")   # le pronostic d'origine
+        self.assertEqual((row["p1"], row["px"], row["p2"]), (60, 25, 15))
+        self.assertEqual(row["favorite"], "home")  # derive des pourcentages d'origine
+        self.assertEqual(row["outcome"], "2")      # mais le score, lui, est bien arrive
+        self.assertEqual(row["surprise"], 1)
+        self.assertEqual(row["upset"], 1)
+        self.assertEqual(row["prediction_hit"], 0)
+
+    def test_derived_columns_stay_consistent(self):
+        """Les colonnes derivees sont recalculees, jamais laissees en desaccord."""
+        db.upsert_matches(self.conn, [_match(p1=49, px=28, p2=23)])
+        db.upsert_matches(self.conn, [_match(home_score=1, away_score=0)])
+        row = self.conn.execute("SELECT * FROM matches").fetchone()
+        self.assertEqual(row["favorite"], "home")
+        self.assertEqual(row["fav_margin"], 21)
+        self.assertEqual(row["outcome"], "1")
+        self.assertEqual(row["surprise"], 0)
+
+    def test_sql_and_python_rules_agree(self):
+        """Le SQL de recompute doit dire exactement la meme chose que le parser."""
+        cases = [(49, 28, 23), (28, 45, 27), (34, 34, 32), (40, 20, 40),
+                 (55, 25, 20), (23, 28, 49), (38, 33, 29), (30, 32, 38)]
+        scores = [(2, 0), (1, 1), (0, 3)]
+        rows = []
+        for i, (p1, px, p2) in enumerate(cases):
+            for j, (hs, a_s) in enumerate(scores):
+                rows.append(_match(match_id=f"m{i}-{j}", home=f"H{i}", away=f"A{j}",
+                                   p1=p1, px=px, p2=p2, prediction="1X",
+                                   home_score=hs, away_score=a_s))
+        db.upsert_matches(self.conn, rows)
+
+        for r in self.conn.execute("SELECT * FROM matches"):
+            fav, margin = compute_favorite(r["p1"], r["px"], r["p2"])
+            outcome = compute_outcome(r["home_score"], r["away_score"])
+            surprise, upset = compute_flags(fav, outcome)
+            self.assertEqual(r["favorite"], fav, r["match_id"])
+            self.assertEqual(r["fav_margin"], margin, r["match_id"])
+            self.assertEqual(r["outcome"], outcome, r["match_id"])
+            self.assertEqual(r["surprise"], surprise, r["match_id"])
+            self.assertEqual(r["upset"], upset, r["match_id"])
+            self.assertEqual(r["prediction_hit"],
+                             compute_prediction_hit(r["prediction"], outcome), r["match_id"])
+
     def test_never_overwrites_a_known_value_with_null(self):
         """Le coeur du besoin : on re-scrape la meme date plusieurs fois."""
         # 1er passage, apres le match : score connu.
@@ -107,6 +158,7 @@ class TestUpsert(unittest.TestCase):
         db.upsert_matches(self.conn, [_match(
             home_score=None, away_score=None, outcome=None, prediction_hit=None)])
 
+
         row = self.conn.execute("SELECT * FROM matches").fetchone()
         self.assertEqual(row["home_score"], 2)
         self.assertEqual(row["away_score"], 2)
@@ -114,18 +166,35 @@ class TestUpsert(unittest.TestCase):
         self.assertEqual(row["prediction_hit"], 1)
 
     def test_fills_in_missing_values(self):
-        db.upsert_matches(self.conn, [_match()])
-        db.upsert_matches(self.conn, [_match(
-            home_score=1, away_score=0, outcome="1", favorite="home",
-            fav_margin=10, surprise=0, upset=0)])
+        """Le score arrive au 2e passage et les colonnes derivees suivent."""
+        db.upsert_matches(self.conn, [_match(p1=52, px=28, p2=20)])
+        row = self.conn.execute("SELECT * FROM matches").fetchone()
+        self.assertIsNone(row["outcome"])
+        self.assertEqual(row["favorite"], "home")   # deja connu sans le score
+        self.assertIsNone(row["surprise"])
 
+        db.upsert_matches(self.conn, [_match(p1=52, px=28, p2=20,
+                                             home_score=1, away_score=0)])
         row = self.conn.execute("SELECT * FROM matches").fetchone()
         self.assertEqual(row["outcome"], "1")
         self.assertEqual(row["favorite"], "home")
-        self.assertEqual(row["fav_margin"], 10)
+        self.assertEqual(row["fav_margin"], 24)
+        self.assertEqual(row["surprise"], 0)
 
-    def test_updates_a_changed_value(self):
-        """Une valeur non NULLE ecrase bien l'ancienne (correction de score)."""
+    def test_derived_columns_ignore_what_the_caller_passes(self):
+        """Les colonnes derivees viennent des regles, pas de l'appelant."""
+        db.upsert_matches(self.conn, [_match(
+            p1=52, px=28, p2=20, home_score=0, away_score=3,
+            favorite="away", fav_margin=99, surprise=0, upset=0, outcome="X")])
+        row = self.conn.execute("SELECT * FROM matches").fetchone()
+        self.assertEqual(row["favorite"], "home")
+        self.assertEqual(row["fav_margin"], 24)
+        self.assertEqual(row["outcome"], "2")
+        self.assertEqual(row["surprise"], 1)
+        self.assertEqual(row["upset"], 1)
+
+    def test_corrects_a_changed_score(self):
+        """Un score corrige par statarea doit bien remonter en base."""
         db.upsert_matches(self.conn, [_match(home_score=1, away_score=0, outcome="1")])
         db.upsert_matches(self.conn, [_match(home_score=2, away_score=0, outcome="1")])
         self.assertEqual(self.conn.execute("SELECT home_score FROM matches").fetchone()[0], 2)

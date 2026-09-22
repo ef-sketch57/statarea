@@ -8,6 +8,7 @@ l'historique sans re-telecharger quand les regles evoluent.
 
 from __future__ import annotations
 
+import gzip
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -28,7 +29,22 @@ class FetchError(RuntimeError):
 
 
 def raw_path(day: str, raw_dir: Path | str = RAW_DIR) -> Path:
-    return Path(raw_dir) / f"{day}.html"
+    """Chemin d'archive d'une date. Le gzip divise la taille par ~10."""
+    return Path(raw_dir) / f"{day}.html.gz"
+
+
+def find_archive(day: str, raw_dir: Path | str = RAW_DIR) -> Optional[Path]:
+    """Archive existante pour une date, gzip ou non (les premieres ne l'etaient pas)."""
+    for path in (raw_path(day, raw_dir), Path(raw_dir) / f"{day}.html"):
+        if path.exists():
+            return path
+    return None
+
+
+def read_archive(path: Path) -> str:
+    if path.suffix == ".gz":
+        return gzip.decompress(path.read_bytes()).decode("utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 def daterange(start: str, end: str) -> Iterator[str]:
@@ -78,7 +94,7 @@ def fetch_day(
 def archive(day: str, html: str, raw_dir: Path | str = RAW_DIR) -> Path:
     path = raw_path(day, raw_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(html, encoding="utf-8")
+    path.write_bytes(gzip.compress(html.encode("utf-8"), compresslevel=9))
     return path
 
 
@@ -89,9 +105,9 @@ def collect_day(
     use_cache: bool = False,
 ) -> list[Match]:
     """Archive puis parse une date. `use_cache` relit l'archive si elle existe."""
-    path = raw_path(day, raw_dir)
-    if use_cache and path.exists():
-        html = path.read_text(encoding="utf-8")
+    cached = find_archive(day, raw_dir) if use_cache else None
+    if cached is not None:
+        html = read_archive(cached)
     else:
         html = fetch_day(day, session=session)
         archive(day, html, raw_dir)
@@ -100,10 +116,15 @@ def collect_day(
 
 def reparse_archive(raw_dir: Path | str = RAW_DIR) -> Iterator[tuple[str, list[Match]]]:
     """Re-parse toutes les archives locales, sans aucune requete reseau."""
-    for path in sorted(Path(raw_dir).glob("*.html")):
-        day = path.stem
+    seen: set[str] = set()
+    paths = sorted(Path(raw_dir).glob("*.html.gz")) + sorted(Path(raw_dir).glob("*.html"))
+    for path in paths:
+        day = path.name.split(".")[0]
+        if day in seen:  # le gzip fait foi si les deux formes coexistent
+            continue
+        seen.add(day)
         try:
-            yield day, parse_page(path.read_text(encoding="utf-8"), expected_date=day)
+            yield day, parse_page(read_archive(path), expected_date=day)
         except ParseError as exc:
             yield day, []
             print(f"  ! {day}: {exc}")

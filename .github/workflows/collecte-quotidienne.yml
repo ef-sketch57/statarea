@@ -1,0 +1,70 @@
+name: Collecte quotidienne
+
+# statarea ne sert qu'une fenetre glissante d'environ +/-3 jours : un jour non
+# collecte est perdu definitivement. Ce job tourne donc tous les jours et
+# re-collecte toute la fenetre, ce qui remplit a la fois les scores des matchs
+# joues et les matchs qui n'etaient pas encore publies la veille.
+on:
+  schedule:
+    # 04h30 UTC : les matchs de la veille sont termines partout.
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      delay:
+        description: "Pause en secondes entre deux pages"
+        default: "5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collecte
+  cancel-in-progress: false
+
+jobs:
+  collecte:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Tests
+        run: python -m unittest discover -s tests
+
+      - name: Collecte de la fenetre disponible
+        run: python -m statarea scrape --window 3 --delay "${{ inputs.delay || '5' }}"
+
+      - name: Couverture apres collecte
+        run: python -m statarea dates
+
+      - name: Archivage du HTML brut
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/raw
+          if git diff --cached --quiet; then
+            echo "Aucune nouvelle archive."
+            exit 0
+          fi
+          git commit -m "Collecte du $(date -u +%Y-%m-%d)"
+          # Un autre job a pu pousser entre-temps : on rejoue par-dessus.
+          for i in 1 2 3; do
+            git pull --rebase origin "${{ github.ref_name }}" && \
+              git push origin "HEAD:${{ github.ref_name }}" && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
+
+      - name: Rapport dans le resume du job
+        run: |
+          {
+            echo '```'
+            python -m statarea report --min-fav 5 --min-dog 5
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

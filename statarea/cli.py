@@ -4,6 +4,7 @@
     python -m statarea scrape --from 2026-09-19 --to 2026-09-22
     python -m statarea scrape --window 3                 # aujourd'hui +/- 3 jours
     python -m statarea reparse                           # re-parse les archives, sans reseau
+    python -m statarea recompute                         # rejoue les regles sur la base
     python -m statarea show --date 2026-09-19 --limit 20 # inspection
     python -m statarea report --min-fav 5 --min-dog 5
 """
@@ -46,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("reparse", help="re-parse les archives locales, sans aucune requete")
     _add_common(p)
     p.add_argument("--raw-dir", default=str(scraper.RAW_DIR))
+
+    p = sub.add_parser("recompute", help="rejoue les regles derivees sur la base existante")
+    _add_common(p)
 
     p = sub.add_parser("show", help="affiche les matchs enregistres")
     _add_common(p)
@@ -132,6 +136,14 @@ def cmd_reparse(args) -> int:
     return 0
 
 
+def cmd_recompute(args) -> int:
+    conn = db.connect(args.db)
+    with conn:
+        db.recompute(conn)
+    print(f"Regles rejouees sur {db.count(conn)} match(s).")
+    return 0
+
+
 def cmd_show(args) -> int:
     conn = db.connect(args.db)
     where, params = [], []
@@ -197,8 +209,8 @@ def cmd_report(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     return {
-        "scrape": cmd_scrape, "reparse": cmd_reparse, "show": cmd_show,
-        "dates": cmd_dates, "report": cmd_report,
+        "scrape": cmd_scrape, "reparse": cmd_reparse, "recompute": cmd_recompute,
+        "show": cmd_show, "dates": cmd_dates, "report": cmd_report,
     }[args.command](args)
 
 

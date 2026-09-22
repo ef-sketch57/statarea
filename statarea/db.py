@@ -47,22 +47,70 @@ CREATE INDEX IF NOT EXISTS idx_matches_away ON matches(away);
 CREATE INDEX IF NOT EXISTS idx_matches_outcome ON matches(outcome);
 """
 
-# Colonnes fusionnees par COALESCE : le nouveau remplace l'ancien seulement
-# s'il n'est pas NULL.
-MERGED = (
-    "sa_id", "kickoff", "country", "competition", "prediction",
-    "p1", "px", "p2", "home_score", "away_score", "outcome",
-    "favorite", "fav_margin", "surprise", "upset", "prediction_hit",
-)
+# La prediction et les pourcentages sont figes a leur PREMIERE valeur connue.
+# C'est le coeur de la methode : on veut noter le pronostic tel qu'il etait
+# publie AVANT le match. Si statarea revisait ses pourcentages une fois le
+# resultat connu, les reprendre rendrait toute l'analyse circulaire.
+FROZEN = ("prediction", "p1", "px", "p2")
 
-INSERT_COLS = ("match_id", "match_date", "home", "away") + MERGED
+# Les faits qui se completent au fil des re-scrapes : le score arrive apres.
+REFRESHED = ("sa_id", "kickoff", "country", "competition", "home_score", "away_score")
+
+# Colonnes entierement recalculees depuis les precedentes, jamais ecrites
+# telles quelles : c'est ce qui garantit qu'une ligne reste coherente quel que
+# soit l'ordre des collectes.
+DERIVED = ("outcome", "favorite", "fav_margin", "surprise", "upset", "prediction_hit")
+
+INSERT_COLS = ("match_id", "match_date", "home", "away") + FROZEN + REFRESHED
 
 UPSERT = f"""
 INSERT INTO matches ({", ".join(INSERT_COLS)})
 VALUES ({", ".join(":" + c for c in INSERT_COLS)})
 ON CONFLICT(match_id) DO UPDATE SET
-    {", ".join(f"{c} = COALESCE(excluded.{c}, matches.{c})" for c in MERGED)},
+    {", ".join(f"{c} = COALESCE(matches.{c}, excluded.{c})" for c in FROZEN)},
+    {", ".join(f"{c} = COALESCE(excluded.{c}, matches.{c})" for c in REFRESHED)},
     updated_at = datetime('now')
+"""
+
+# Regles metier, exprimees une seule fois, en SQL.
+#
+#   favorite   : argmax STRICT de p1 / px / p2, restreint aux colonnes 1 et 2.
+#                X en tete, ou egalite au sommet -> NULL (match exclu des indices).
+#   fav_margin : pourcentage du favori moins le deuxieme, toutes colonnes confondues.
+#   surprise   : le favori n'a pas gagne (nul compris).
+#   upset      : l'outsider a gagne (le nul n'est pas un upset).
+RECOMPUTE = """
+UPDATE matches SET
+    outcome = CASE
+        WHEN home_score IS NULL OR away_score IS NULL THEN NULL
+        WHEN home_score > away_score THEN '1'
+        WHEN home_score < away_score THEN '2'
+        ELSE 'X' END,
+    favorite = CASE
+        WHEN p1 IS NULL OR px IS NULL OR p2 IS NULL THEN NULL
+        WHEN p1 > px AND p1 > p2 THEN 'home'
+        WHEN p2 > px AND p2 > p1 THEN 'away'
+        ELSE NULL END,
+    fav_margin = CASE
+        WHEN p1 IS NULL OR px IS NULL OR p2 IS NULL THEN NULL
+        WHEN p1 > px AND p1 > p2 THEN p1 - MAX(px, p2)
+        WHEN p2 > px AND p2 > p1 THEN p2 - MAX(p1, px)
+        ELSE NULL END
+"""
+
+RECOMPUTE_FLAGS = """
+UPDATE matches SET
+    surprise = CASE
+        WHEN favorite IS NULL OR outcome IS NULL THEN NULL
+        WHEN favorite = 'home' THEN outcome <> '1'
+        ELSE outcome <> '2' END,
+    upset = CASE
+        WHEN favorite IS NULL OR outcome IS NULL THEN NULL
+        WHEN favorite = 'home' THEN outcome = '2'
+        ELSE outcome = '1' END,
+    prediction_hit = CASE
+        WHEN prediction IS NULL OR outcome IS NULL THEN NULL
+        ELSE INSTR(prediction, outcome) > 0 END
 """
 
 
@@ -95,9 +143,20 @@ def upsert_matches(conn: sqlite3.Connection, matches: Iterable[Match]) -> tuple[
     payload = [{c: r.get(c) for c in INSERT_COLS} for r in rows]
     with conn:
         conn.executemany(UPSERT, payload)
+        recompute(conn)
 
     new = sum(1 for i in ids if i not in known)
     return new, len(ids) - new
+
+
+def recompute(conn: sqlite3.Connection) -> None:
+    """Recalcule les colonnes derivees de toute la base.
+
+    Appele apres chaque upsert, et disponible seul pour rejouer une regle
+    modifiee sans retoucher aux donnees brutes ni au reseau.
+    """
+    conn.execute(RECOMPUTE)
+    conn.execute(RECOMPUTE_FLAGS)
 
 
 def count(conn: sqlite3.Connection, where: str = "", params: tuple = ()) -> int:
