@@ -18,13 +18,28 @@ une `ParseError` en cas de désaccord, plutôt que d'enregistrer les mauvais mat
 mauvaise date.
 
 Conséquence : **l'historique ne peut que se construire vers l'avant**, par une collecte
-quotidienne. D'où l'archivage systématique du HTML brut dans `data/raw/YYYY-MM-DD.html.gz`
-**avant** tout parsing : quand les règles évolueront, `reparse` rejoue tout l'historique
+quotidienne. D'où l'archivage systématique du HTML brut dans
+`data/raw/YYYY-MM-DD/YYYYmmddTHHMMSSZ.html.gz` **avant** tout parsing : quand les règles évolueront, `reparse` rejoue tout l'historique
 sans une seule requête réseau. Les archives sont versionnées dans le dépôt — c'est la seule
 copie qui existe. La base SQLite, elle, n'est pas versionnée : elle se reconstruit
 intégralement depuis les archives.
 
-Le gzip ramène une journée de 1,7 Mo à ~80 Ko, soit environ 28 Mo par an.
+Le gzip ramène une journée de 1,7 Mo à ~80 Ko.
+
+### Un fichier par téléchargement, jamais écrasé
+
+**statarea remanie ses pages passées en continu.** Mesuré sur la page du 19 septembre, à
+14 minutes d'intervalle : **18 matchs disparus, 7 apparus**. Une archive écrasée est donc
+une perte définitive — et comme la fenêtre ne remonte pas au-delà de 3 jours, elle est
+irrécupérable.
+
+Chaque téléchargement écrit donc son propre instantané, horodaté en UTC. `reparse` les
+rejoue du plus ancien au plus récent : l'upsert accumule les matchs que statarea a retirés
+entre deux collectes, et le pronostic retenu reste bien le plus ancien connu. Un instantané
+identique au précédent n'est pas réécrit, ce qui évite sept copies d'une date figée.
+
+Sur les 7 dates collectées, l'union des instantanés donne **834 matchs, contre 815 si on ne
+gardait que le dernier état de chaque page**.
 
 Autre conséquence, moins évidente : statarea ne publie ses pronostics qu'environ un jour à
 l'avance. Le re-scrape quotidien de toute la fenêtre ne sert donc pas qu'à récupérer les

@@ -9,8 +9,9 @@ l'historique sans re-telecharger quand les regles evoluent.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -28,23 +29,53 @@ class FetchError(RuntimeError):
     pass
 
 
-def raw_path(day: str, raw_dir: Path | str = RAW_DIR) -> Path:
-    """Chemin d'archive d'une date. Le gzip divise la taille par ~10."""
-    return Path(raw_dir) / f"{day}.html.gz"
+def day_dir(day: str, raw_dir: Path | str = RAW_DIR) -> Path:
+    return Path(raw_dir) / day
 
 
-def find_archive(day: str, raw_dir: Path | str = RAW_DIR) -> Optional[Path]:
-    """Archive existante pour une date, gzip ou non (les premieres ne l'etaient pas)."""
-    for path in (raw_path(day, raw_dir), Path(raw_dir) / f"{day}.html"):
-        if path.exists():
-            return path
-    return None
+def snapshot_path(day: str, when: Optional[datetime] = None,
+                  raw_dir: Path | str = RAW_DIR) -> Path:
+    """Chemin d'un instantane : data/raw/YYYY-MM-DD/YYYYmmddTHHMMSSZ.html.gz.
+
+    Un fichier par telechargement, jamais ecrase. statarea remanie ses pages
+    passees en continu : entre deux collectes d'une meme date, des matchs
+    disparaissent et d'autres apparaissent. Ecraser l'archive de la veille
+    detruirait donc definitivement les matchs que la nouvelle version ne
+    contient plus.
+    """
+    when = when or datetime.now(timezone.utc)
+    return day_dir(day, raw_dir) / f"{when.strftime('%Y%m%dT%H%M%SZ')}.html.gz"
+
+
+def snapshots(day: str, raw_dir: Path | str = RAW_DIR) -> list[Path]:
+    """Instantanes d'une date, du plus ancien au plus recent.
+
+    L'ancien format plat (data/raw/YYYY-MM-DD.html[.gz]) est encore lu et
+    considere comme le plus ancien.
+    """
+    found = []
+    for legacy in (Path(raw_dir) / f"{day}.html.gz", Path(raw_dir) / f"{day}.html"):
+        if legacy.exists():
+            found.append(legacy)
+    found += sorted(day_dir(day, raw_dir).glob("*.html.gz"))
+    return found
+
+
+def archived_days(raw_dir: Path | str = RAW_DIR) -> list[str]:
+    root = Path(raw_dir)
+    days = {d.name for d in root.glob("[0-9]" * 4 + "-*") if d.is_dir()}
+    days |= {f.name.split(".")[0] for f in root.glob("*.html*")}
+    return sorted(days)
 
 
 def read_archive(path: Path) -> str:
     if path.suffix == ".gz":
         return gzip.decompress(path.read_bytes()).decode("utf-8")
     return path.read_text(encoding="utf-8")
+
+
+def _digest(html: str) -> str:
+    return hashlib.sha256(html.encode("utf-8")).hexdigest()
 
 
 def daterange(start: str, end: str) -> Iterator[str]:
@@ -91,8 +122,18 @@ def fetch_day(
     raise FetchError(f"{day}: echec du telechargement ({last})")
 
 
-def archive(day: str, html: str, raw_dir: Path | str = RAW_DIR) -> Path:
-    path = raw_path(day, raw_dir)
+def archive(day: str, html: str, raw_dir: Path | str = RAW_DIR,
+            when: Optional[datetime] = None) -> Optional[Path]:
+    """Ecrit un nouvel instantane. Retourne None si la page n'a pas bouge.
+
+    Dedoublonner sur le contenu evite d'accumuler des copies identiques : une
+    date figee est collectee sept fois sans rien ajouter.
+    """
+    existing = snapshots(day, raw_dir)
+    if existing and _digest(read_archive(existing[-1])) == _digest(html):
+        return None
+
+    path = snapshot_path(day, when, raw_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(gzip.compress(html.encode("utf-8"), compresslevel=9))
     return path
@@ -105,9 +146,9 @@ def collect_day(
     use_cache: bool = False,
 ) -> list[Match]:
     """Archive puis parse une date. `use_cache` relit l'archive si elle existe."""
-    cached = find_archive(day, raw_dir) if use_cache else None
-    if cached is not None:
-        html = read_archive(cached)
+    cached = snapshots(day, raw_dir) if use_cache else None
+    if cached:
+        html = read_archive(cached[-1])
     else:
         html = fetch_day(day, session=session)
         archive(day, html, raw_dir)
@@ -115,19 +156,19 @@ def collect_day(
 
 
 def reparse_archive(raw_dir: Path | str = RAW_DIR) -> Iterator[tuple[str, list[Match]]]:
-    """Re-parse toutes les archives locales, sans aucune requete reseau."""
-    seen: set[str] = set()
-    paths = sorted(Path(raw_dir).glob("*.html.gz")) + sorted(Path(raw_dir).glob("*.html"))
-    for path in paths:
-        day = path.name.split(".")[0]
-        if day in seen:  # le gzip fait foi si les deux formes coexistent
-            continue
-        seen.add(day)
-        try:
-            yield day, parse_page(read_archive(path), expected_date=day)
-        except ParseError as exc:
-            yield day, []
-            print(f"  ! {day}: {exc}")
+    """Re-parse toutes les archives locales, sans aucune requete reseau.
+
+    Les instantanes d'une meme date sont rejoues du plus ancien au plus
+    recent : l'upsert accumule alors les matchs que statarea a retires entre
+    deux collectes, et le pronostic retenu est bien le plus ancien connu.
+    """
+    for day in archived_days(raw_dir):
+        for path in snapshots(day, raw_dir):
+            try:
+                yield day, parse_page(read_archive(path), expected_date=day)
+            except ParseError as exc:
+                yield day, []
+                print(f"  ! {day} ({path.name}): {exc}")
 
 
 def sleep_between(delay: float = DEFAULT_DELAY) -> None:
