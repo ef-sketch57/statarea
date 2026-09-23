@@ -1,0 +1,17 @@
+# Netlify construit le site directement depuis le depot : chaque commit du job
+# de collecte declenche une reconstruction, sans jeton a stocker cote GitHub.
+#
+# La base SQLite n'est pas versionnee, elle se reconstruit ici depuis les
+# archives HTML du depot. reparse ne fait aucune requete reseau.
+[build]
+  command = "pip install -r requirements.txt && python -m statarea reparse && python -m statarea site"
+  publish = "dist"
+
+[build.environment]
+  PYTHON_VERSION = "3.11"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

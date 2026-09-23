@@ -203,6 +203,50 @@ Deux pièges, tous deux gérés :
   statarea le change un jour, le parsing s'arrête au lieu d'inverser silencieusement
   `p1` et `p2`.
 
+## Le site
+
+`python -m statarea site` genere un site statique dans `dist/` : les matchs a venir,
+avec le pronostic statarea, les pourcentages 1/X/2 et la **marge du favori**.
+
+C'est la marge qui justifie le site : la prediction seule ne distingue pas un `1` a
+63/25/12 (marge 38, favori net) d'un `1` a 38/33/29 (marge 5, pile ou face). Les deux
+s'affichent `1` chez statarea.
+
+Le site est une simple vue de la base, sans etat propre : il se reconstruit entierement
+depuis `data/raw/`.
+
+### Couleurs de la barre 1/X/2
+
+La barre n'est pas categorielle mais **divergente** : domicile ← nul → exterieur. Donc
+deux teintes opposees et un midpoint gris neutre, jamais une troisieme teinte.
+
+| mode | domicile | nul | exterieur |
+|---|---|---|---|
+| clair | `#2a78d6` | `#898781` | `#e34948` |
+| sombre | `#3987e5` | `#5f5e5a` | `#e66767` |
+
+Palette passee au validateur : separation daltonienne ΔE 8,7 (clair) et 11,7 (sombre),
+vision normale 17,8 et 21,8. Le gris sombre est sous 3:1 de contraste, ce qui impose
+d'ecrire les valeurs en clair — les trois pourcentages sont donc toujours affiches et la
+couleur ne porte jamais seule l'information.
+
+### Deploiement
+
+Le depot contient `netlify.toml` et `vercel.json`. Dans les deux cas, l'hebergeur
+construit **depuis le depot** : chaque commit du job de collecte declenche une
+reconstruction, et aucun jeton de deploiement n'est stocke cote GitHub.
+
+Sur Netlify : *Add new site → Import an existing project*, choisir le depot. La commande
+de build et le repertoire publie sont deja dans `netlify.toml`, il n'y a rien a saisir.
+
+Une precision qui compte : la liste des matchs a venir est calculee **a la date de
+construction**. Un jour sans nouvelle archive ne produit pas de commit, donc pas de
+reconstruction, et le site afficherait des matchs deja joues. Pour l'eviter, creez un
+*build hook* chez l'hebergeur (Netlify : *Site settings → Build & deploy → Build hooks*)
+et collez son URL dans un secret GitHub nomme `DEPLOY_BUILD_HOOK` (*Settings → Secrets and
+variables → Actions*). Le job le declenche alors chaque jour. Sans ce secret, l'etape est
+simplement ignoree.
+
 ## Tests
 
 ```bash

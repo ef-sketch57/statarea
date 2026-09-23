@@ -6,6 +6,7 @@
     python -m statarea reparse                           # re-parse les archives, sans reseau
     python -m statarea recompute                         # rejoue les regles sur la base
     python -m statarea show --date 2026-09-19 --limit 20 # inspection
+    python -m statarea site                              # genere le site dans dist/
     python -m statarea report --min-fav 5 --min-dog 5
 """
 
@@ -16,7 +17,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from . import db, report, scraper
+from . import db, report, scraper, site
 from .parser import ParseError
 from .scraper import FetchError
 
@@ -59,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("dates", help="couverture de la base, par date")
     _add_common(p)
+
+    p = sub.add_parser("site", help="genere le site statique dans dist/")
+    _add_common(p)
+    p.add_argument("--out", default="dist", help="repertoire de sortie (defaut: dist)")
+    p.add_argument("--today", help="date de reference YYYY-MM-DD (defaut: aujourd'hui)")
 
     p = sub.add_parser("report", help="classements de fiabilite et d'imprevisibilite")
     _add_common(p)
@@ -198,6 +204,14 @@ def cmd_dates(args) -> int:
     return 0
 
 
+def cmd_site(args) -> int:
+    conn = db.connect(args.db)
+    page = site.build(conn, args.out, args.today)
+    upcoming = len(site.upcoming(conn, args.today or date.today().isoformat()))
+    print(f"{page} genere ({upcoming} matchs a venir, {db.count(conn)} en base).")
+    return 0
+
+
 def cmd_report(args) -> int:
     conn = db.connect(args.db)
     print(report.build_report(conn, min_fav=args.min_fav, min_dog=args.min_dog,
@@ -210,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     return {
         "scrape": cmd_scrape, "reparse": cmd_reparse, "recompute": cmd_recompute,
-        "show": cmd_show, "dates": cmd_dates, "report": cmd_report,
+        "show": cmd_show, "dates": cmd_dates, "site": cmd_site, "report": cmd_report,
     }[args.command](args)
 
 

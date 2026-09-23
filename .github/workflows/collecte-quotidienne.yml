@@ -6,8 +6,23 @@ name: Collecte quotidienne
 # joues et les matchs qui n'etaient pas encore publies la veille.
 on:
   schedule:
-    # 04h30 UTC : les matchs de la veille sont termines partout.
-    - cron: "30 4 * * *"
+    # Trois creneaux par jour plutot qu'un seul, pour deux raisons.
+    #
+    # 1. Les crons GitHub Actions se declenchent avec un retard variable, et
+    #    peuvent sauter un creneau sans rien signaler. Un jour manque est
+    #    definitivement perdu : la fenetre de statarea ne remonte pas au-dela
+    #    de 3 jours. Trois creneaux rendent une journee blanche tres improbable.
+    # 2. Les matchs se terminent a des heures tres differentes selon les
+    #    continents, et statarea ajoute des matchs a ses pages passees en
+    #    continu. Repasser dans la journee ramene donc reellement plus de
+    #    donnees, ce n'est pas qu'une securite.
+    #
+    # Le cout est nul : la collecte est idempotente et un instantane identique
+    # au precedent n'est pas reecrit. Minutes volontairement decalees, les
+    # heures rondes etant les plus congestionnees chez GitHub.
+    - cron: "25 5 * * *"
+    - cron: "25 13 * * *"
+    - cron: "25 21 * * *"
   workflow_dispatch:
     inputs:
       delay:
@@ -60,6 +75,20 @@ jobs:
             sleep $((i * 5))
           done
           exit 1
+
+      - name: Reconstruction du site
+        # La liste des matchs a venir est calculee a la date de construction.
+        # Sans commit (collecte sans nouveaute), l'hebergeur ne reconstruirait
+        # pas et le site afficherait des matchs deja joues. Ce hook force donc
+        # une reconstruction quotidienne. Sans le secret, l'etape est ignoree.
+        env:
+          HOOK: ${{ secrets.DEPLOY_BUILD_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "DEPLOY_BUILD_HOOK absent : reconstruction non declenchee."
+            exit 0
+          fi
+          curl -fsS -X POST -d '{}' "$HOOK" > /dev/null && echo "Reconstruction declenchee."
 
       - name: Rapport dans le resume du job
         run: |
