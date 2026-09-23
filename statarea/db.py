@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from .parser import Match
 
@@ -20,7 +20,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS matches (
     match_id        TEXT PRIMARY KEY,   -- date|home|away
     sa_id           TEXT,               -- identifiant interne statarea
-    match_date      TEXT NOT NULL,
+    match_date      TEXT,
     kickoff         TEXT,
     country         TEXT,
     competition     TEXT,
@@ -45,23 +45,43 @@ CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(match_date);
 CREATE INDEX IF NOT EXISTS idx_matches_home ON matches(home);
 CREATE INDEX IF NOT EXISTS idx_matches_away ON matches(away);
 CREATE INDEX IF NOT EXISTS idx_matches_outcome ON matches(outcome);
+
+-- Un releve de cotes par passage : les cotes bougent, et ce mouvement est
+-- lui-meme une information. On garde donc l'historique plutot que la derniere
+-- valeur, exactement comme pour les instantanes HTML.
+CREATE TABLE IF NOT EXISTS odds (
+    match_id    TEXT NOT NULL,
+    fetched_at  TEXT NOT NULL,      -- UTC, ISO 8601
+    o1          REAL, ox    REAL, o2    REAL,   -- temps plein 1 X 2
+    oht1        REAL, ohtx  REAL, oht2  REAL,   -- mi-temps
+    over15      REAL, under15 REAL,
+    over25      REAL, under25 REAL,
+    over35      REAL, under35 REAL,
+    bts         REAL, ots     REAL,             -- les deux marquent / un seul
+    PRIMARY KEY (match_id, fetched_at)
+);
+CREATE INDEX IF NOT EXISTS idx_odds_match ON odds(match_id);
 """
+
+ODDS_COLS = ("o1", "ox", "o2", "oht1", "ohtx", "oht2",
+             "over15", "under15", "over25", "under25", "over35", "under35",
+             "bts", "ots")
 
 # La prediction et les pourcentages sont figes a leur PREMIERE valeur connue.
 # C'est le coeur de la methode : on veut noter le pronostic tel qu'il etait
 # publie AVANT le match. Si statarea revisait ses pourcentages une fois le
 # resultat connu, les reprendre rendrait toute l'analyse circulaire.
-FROZEN = ("prediction", "p1", "px", "p2")
+FROZEN = ("prediction", "p1", "px", "p2", "match_date", "kickoff")
 
 # Les faits qui se completent au fil des re-scrapes : le score arrive apres.
-REFRESHED = ("sa_id", "kickoff", "country", "competition", "home_score", "away_score")
+REFRESHED = ("sa_id", "country", "competition", "home_score", "away_score")
 
 # Colonnes entierement recalculees depuis les precedentes, jamais ecrites
 # telles quelles : c'est ce qui garantit qu'une ligne reste coherente quel que
 # soit l'ordre des collectes.
 DERIVED = ("outcome", "favorite", "fav_margin", "surprise", "upset", "prediction_hit")
 
-INSERT_COLS = ("match_id", "match_date", "home", "away") + FROZEN + REFRESHED
+INSERT_COLS = ("match_id", "home", "away") + FROZEN + REFRESHED
 
 UPSERT = f"""
 INSERT INTO matches ({", ".join(INSERT_COLS)})
@@ -157,6 +177,33 @@ def recompute(conn: sqlite3.Connection) -> None:
     """
     conn.execute(RECOMPUTE)
     conn.execute(RECOMPUTE_FLAGS)
+
+
+def upsert_odds(conn: sqlite3.Connection, records) -> int:
+    """Enregistre des releves de cotes. Un meme (match, instant) n'est ecrit qu'une fois."""
+    rows = []
+    for rec in records:
+        values = rec.get("odds") or {}
+        row = {"match_id": rec["sa_id"], "fetched_at": rec["fetched_at"]}
+        row.update({c: values.get(c) for c in ODDS_COLS})
+        rows.append(row)
+    if not rows:
+        return 0
+
+    cols = ("match_id", "fetched_at") + ODDS_COLS
+    sql = (f"INSERT OR IGNORE INTO odds ({', '.join(cols)}) "
+           f"VALUES ({', '.join(':' + c for c in cols)})")
+    before = conn.execute("SELECT COUNT(*) FROM odds").fetchone()[0]
+    with conn:
+        conn.executemany(sql, rows)
+    return conn.execute("SELECT COUNT(*) FROM odds").fetchone()[0] - before
+
+
+def latest_odds(conn: sqlite3.Connection, match_id: str) -> Optional[sqlite3.Row]:
+    """Dernier releve connu pour un match."""
+    return conn.execute(
+        "SELECT * FROM odds WHERE match_id = ? ORDER BY fetched_at DESC LIMIT 1",
+        (match_id,)).fetchone()
 
 
 def count(conn: sqlite3.Connection, where: str = "", params: tuple = ()) -> int:

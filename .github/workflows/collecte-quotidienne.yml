@@ -58,11 +58,19 @@ jobs:
       - name: Couverture apres collecte
         run: python -m statarea dates
 
+      - name: Releve des cotes
+        # Une requete par match : ~180 appels a 1,5 s, soit environ 5 minutes.
+        # Sans les cotes, on ne peut mesurer qu'une justesse, jamais une
+        # rentabilite. Un echec ici ne doit pas perdre la collecte des matchs,
+        # qui est la seule chose irrecuperable.
+        continue-on-error: true
+        run: python -m statarea odds --delay 1.5
+
       - name: Archivage du HTML brut
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/raw
+          git add data/raw data/odds
           if git diff --cached --quiet; then
             echo "Aucune nouvelle archive."
             exit 0

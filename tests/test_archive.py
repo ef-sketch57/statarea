@@ -7,6 +7,7 @@ ecrasee est donc une perte definitive.
 
 import gzip
 import tempfile
+import zlib
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,12 +44,18 @@ MATCH = """
 
 
 def page(*teams, scores=False):
+    """Construit une page de test.
+
+    L'identifiant vient de la paire d'equipes, pas de la position : les sa_id
+    de statarea sont propres a chaque match et le restent quand la page change
+    d'ordre ou qu'un match disparait.
+    """
     goals = "<a class='goals'>2</a>", "<a class='goals'>0</a>"
     blank = "<div class='goals'>-</div>", "<div class='goals'>-</div>"
     hg, ag = goals if scores else blank
     body = "".join(
-        MATCH.format(id=i, home=h, away=a, hg=hg, ag=ag)
-        for i, (h, a) in enumerate(teams)
+        MATCH.format(id=zlib.crc32(f"{h}|{a}".encode()), home=h, away=a, hg=hg, ag=ag)
+        for h, a in teams
     )
     return PAGE.format(matches=body)
 

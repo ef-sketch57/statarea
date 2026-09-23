@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ import requests
 from .parser import Match, ParseError, parse_page
 
 BASE_URL = "https://www.statarea.com/predictions/date/{date}/competition"
+CONTROLLER_URL = "https://www.statarea.com/actions/controller/"
 RAW_DIR = Path("data/raw")
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
 DEFAULT_DELAY = 3.0
@@ -89,13 +91,38 @@ def daterange(start: str, end: str) -> Iterator[str]:
 
 
 def make_session() -> requests.Session:
+    """Session HTTP avec le fuseau horaire FIGE EN UTC.
+
+    statarea deduit le fuseau de l'adresse IP et affiche les heures dedans.
+    Une collecte lancee depuis une autre machine voit donc les memes matchs a
+    des heures differentes, et ceux qui encadrent minuit changent de DATE.
+    Mesure sur nos propres archives : quatre fuseaux distincts (GMT-4, GMT-7,
+    GMT 0, GMT+1) selon la machine, et 5,9 % des matchs enregistres sous deux
+    dates, donc comptes deux fois dans les statistiques.
+
+    Le reglage est garde en session par le cookie statareacustomtimezone.
+    """
     session = requests.Session()
     session.headers.update({
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9",
     })
+    pin_timezone(session)
     return session
+
+
+def pin_timezone(session: requests.Session, timezone: str = "GMT 0") -> bool:
+    """Fige le fuseau de la session. Retourne False si statarea a refuse."""
+    try:
+        r = session.post(
+            CONTROLLER_URL,
+            data={"object": json.dumps({"action": "setCustomTimezone", "timezone": timezone})},
+            headers={"X-Requested-With": "XMLHttpRequest"}, timeout=30,
+        )
+        return r.ok and "success" in r.text.lower()
+    except requests.RequestException:
+        return False
 
 
 def fetch_day(

@@ -6,6 +6,7 @@
     python -m statarea reparse                           # re-parse les archives, sans reseau
     python -m statarea recompute                         # rejoue les regles sur la base
     python -m statarea show --date 2026-09-19 --limit 20 # inspection
+    python -m statarea odds --delay 1                    # releve les cotes a venir
     python -m statarea residual --min 5                  # indice residuel par equipe
     python -m statarea site                              # genere le site dans dist/
     python -m statarea report --min-fav 5 --min-dog 5
@@ -18,7 +19,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from . import db, report, scraper, site
+from . import db, odds, report, scraper, site
 from .parser import ParseError
 from .scraper import FetchError
 
@@ -61,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("dates", help="couverture de la base, par date")
     _add_common(p)
+
+    p = sub.add_parser("odds", help="releve les cotes des matchs a venir")
+    _add_common(p)
+    p.add_argument("--delay", type=float, default=1.0,
+                   help="pause entre deux matchs en secondes (defaut: 1)")
+    p.add_argument("--ahead", type=int, default=3, help="jours a venir couverts")
+    p.add_argument("--behind", type=int, default=1, help="jours passes couverts")
+    p.add_argument("--limit", type=int, help="s'arreter apres N matchs")
+    p.add_argument("--today", help="date de reference YYYY-MM-DD")
 
     p = sub.add_parser("residual", help="indice residuel : ecart a ce qu'annoncait statarea")
     _add_common(p)
@@ -213,6 +223,22 @@ def cmd_dates(args) -> int:
     return 0
 
 
+def cmd_odds(args) -> int:
+    conn = db.connect(args.db)
+
+    def progress(i, total, row):
+        if i % 25 == 0 or i == total:
+            print(f"  {i}/{total}...", flush=True)
+
+    r = odds.collect(conn, today=args.today, ahead=args.ahead, behind=args.behind,
+                     delay=args.delay, limit=args.limit, progress=progress)
+    print(f"\n{r['matchs']} matchs interroges : {r['cotes']} avec cotes, "
+          f"{r['sans_cote']} sans, {r['echecs']} echec(s).")
+    print(f"{r['archives']} releve(s) archive(s) dans data/odds/, "
+          f"{r['enregistres']} enregistre(s) en base.")
+    return 0
+
+
 def cmd_residual(args) -> int:
     conn = db.connect(args.db)
     print(report.build_residual_report(conn, min_matches=args.min_matches, top=args.top,
@@ -241,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     return {
         "scrape": cmd_scrape, "reparse": cmd_reparse, "recompute": cmd_recompute,
         "show": cmd_show, "dates": cmd_dates, "site": cmd_site,
-        "report": cmd_report, "residual": cmd_residual,
+        "report": cmd_report, "residual": cmd_residual, "odds": cmd_odds,
     }[args.command](args)
 
 

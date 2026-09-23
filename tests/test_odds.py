@@ -1,0 +1,127 @@
+"""Tests de la collecte des cotes."""
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from statarea import db, odds
+
+REPONSE = """
+<div class='sublabel'><div class='label'>Latest bet coefficients</div></div>
+<div class='betinfoblock'><div class='header'>Full time 1 X 2</div>
+  <div class='betitem'><div class='value'>2.10</div><div class='label'>1</div></div>
+  <div class='betitem'><div class='value'>2.90</div><div class='label'>X</div></div>
+  <div class='betitem'><div class='value'>3.60</div><div class='label'>2</div></div>
+</div>
+<div class='betinfoblock'><div class='header'>Over/Under goals</div>
+  <div class='betitem'><div class='value'>2.50</div><div class='label'>Over 2.5 goals</div></div>
+  <div class='betitem'><div class='value'>1.50</div><div class='label'>Under 2.5 goals</div></div>
+</div>
+<div class='betinfoblock'><div class='header'>Inconnu</div>
+  <div class='betitem'><div class='value'>9.99</div><div class='label'>Marche exotique</div></div>
+</div>
+"""
+
+
+class TestParse(unittest.TestCase):
+    def test_extracts_known_markets(self):
+        d = odds.parse_odds(REPONSE)
+        self.assertEqual(d["o1"], 2.10)
+        self.assertEqual(d["ox"], 2.90)
+        self.assertEqual(d["o2"], 3.60)
+        self.assertEqual(d["over25"], 2.50)
+        self.assertEqual(d["under25"], 1.50)
+
+    def test_ignores_unknown_markets(self):
+        """Un marche non reconnu ne doit pas polluer la ligne."""
+        self.assertNotIn(9.99, odds.parse_odds(REPONSE).values())
+
+    def test_empty_response(self):
+        self.assertEqual(odds.parse_odds(""), {})
+        self.assertEqual(odds.parse_odds("<div>rien</div>"), {})
+
+    def test_unparsable_value_is_skipped(self):
+        html = ("<div class='betitem'><div class='value'>-</div>"
+                "<div class='label'>1</div></div>")
+        self.assertEqual(odds.parse_odds(html), {})
+
+
+class TestImplied(unittest.TestCase):
+    def test_normalises_and_reports_margin(self):
+        p1, px, p2, marge = odds.implied(2.10, 2.90, 3.60)
+        self.assertAlmostEqual(p1 + px + p2, 1.0, places=9)
+        self.assertAlmostEqual(p1 * 100, 43.3, delta=0.2)
+        self.assertAlmostEqual(p2 * 100, 25.3, delta=0.2)
+        self.assertAlmostEqual(marge * 100, 9.9, delta=0.2)
+
+    def test_fair_book_has_no_margin(self):
+        """Trois cotes a 3.00 : marche equitable, marge nulle."""
+        p1, px, p2, marge = odds.implied(3.0, 3.0, 3.0)
+        self.assertAlmostEqual(marge, 0.0, places=9)
+        self.assertAlmostEqual(p1, 1 / 3, places=9)
+
+
+class TestArchive(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _rec(self, sa_id, stamp, o1):
+        return {"sa_id": sa_id, "fetched_at": stamp, "odds": {"o1": o1, "ox": 3.0, "o2": 3.5}}
+
+    def test_append_and_read(self):
+        n = odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
+        self.assertEqual(n, 1)
+        self.assertEqual(len(odds.read_day("2026-09-23", self.dir)), 1)
+
+    def test_unchanged_odds_are_not_rewritten(self):
+        odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
+        n = odds.append_day("2026-09-23", [self._rec("1", "T2", 2.1)], self.dir)
+        self.assertEqual(n, 0)
+        self.assertEqual(len(odds.read_day("2026-09-23", self.dir)), 1)
+
+    def test_a_moved_odd_is_kept_as_a_new_record(self):
+        """Le mouvement des cotes est une information : on garde les deux."""
+        odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
+        n = odds.append_day("2026-09-23", [self._rec("1", "T2", 1.9)], self.dir)
+        self.assertEqual(n, 1)
+        records = odds.read_day("2026-09-23", self.dir)
+        self.assertEqual([r["odds"]["o1"] for r in records], [2.1, 1.9])
+
+    def test_earlier_records_are_never_overwritten(self):
+        for i, o in enumerate((2.1, 2.0, 1.9)):
+            odds.append_day("2026-09-23", [self._rec("1", f"T{i}", o)], self.dir)
+        self.assertEqual(len(odds.read_day("2026-09-23", self.dir)), 3)
+
+    def test_archived_days(self):
+        odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
+        odds.append_day("2026-09-24", [self._rec("2", "T1", 2.1)], self.dir)
+        self.assertEqual(odds.archived_days(self.dir), ["2026-09-23", "2026-09-24"])
+
+
+class TestStore(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(":memory:")
+
+    def test_insert_and_latest(self):
+        db.upsert_odds(self.conn, [
+            {"sa_id": "42", "fetched_at": "2026-09-23T08:00:00Z", "odds": {"o1": 2.5, "ox": 3.0, "o2": 3.0}},
+            {"sa_id": "42", "fetched_at": "2026-09-23T20:00:00Z", "odds": {"o1": 2.1, "ox": 3.0, "o2": 3.6}},
+        ])
+        self.assertEqual(db.latest_odds(self.conn, "42")["o1"], 2.1)
+
+    def test_same_instant_is_written_once(self):
+        rec = {"sa_id": "42", "fetched_at": "T", "odds": {"o1": 2.5}}
+        self.assertEqual(db.upsert_odds(self.conn, [rec]), 1)
+        self.assertEqual(db.upsert_odds(self.conn, [rec]), 0)
+
+    def test_missing_markets_are_null(self):
+        db.upsert_odds(self.conn, [{"sa_id": "42", "fetched_at": "T", "odds": {"o1": 2.5}}])
+        self.assertIsNone(db.latest_odds(self.conn, "42")["over25"])
+
+
+if __name__ == "__main__":
+    unittest.main()

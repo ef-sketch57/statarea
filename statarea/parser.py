@@ -193,8 +193,20 @@ def compute_prediction_hit(prediction: Optional[str], outcome: Optional[str]) ->
     return int(outcome in prediction)
 
 
-def build_match_id(match_date: str, home: str, away: str) -> str:
-    return f"{match_date}|{home}|{away}"
+def build_match_id(match_date: str, home: str, away: str,
+                   sa_id: Optional[str] = None) -> str:
+    """Identifiant stable d'un match.
+
+    sa_id est l'identifiant interne de statarea : c'est le seul vraiment
+    stable. La cle date|domicile|exterieur ne l'est pas, parce que statarea
+    affiche les heures dans le fuseau deduit de l'IP : un match a 21:00 GMT
+    devient 02:00 le lendemain vu depuis GMT+5, et se retrouve enregistre sous
+    deux dates. Mesure sur nos archives avant correction : 5,9 % des matchs
+    en double, comptes deux fois dans les statistiques.
+
+    On garde la cle composee en repli, pour les rares lignes sans sa_id.
+    """
+    return sa_id if sa_id else f"{match_date}|{home}|{away}"
 
 
 def parse_page(html: str, expected_date: Optional[str] = None) -> list[Match]:
@@ -253,7 +265,7 @@ def parse_page(html: str, expected_date: Optional[str] = None) -> list[Match]:
 
             matches.append(
                 Match(
-                    match_id=build_match_id(match_date, home, away),
+                    match_id=build_match_id(match_date, home, away, node.get("id")),
                     sa_id=node.get("id"),
                     match_date=match_date,
                     kickoff=kickoff,

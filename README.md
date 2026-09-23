@@ -203,6 +203,50 @@ Deux pièges, tous deux gérés :
   statarea le change un jour, le parsing s'arrête au lieu d'inverser silencieusement
   `p1` et `p2`.
 
+## Les cotes
+
+`python -m statarea odds --delay 1.5`
+
+Les cotes ne sont pas dans la page de liste : statarea les sert a la demande, match par
+match, par son endpoint interne
+(`POST /actions/controller/` avec `object={"action":"getMatchBetInformation","matchid":...}`).
+
+**Pourquoi elles changent tout.** Un taux de reussite ne dit rien sur la rentabilite. Si
+statarea annonce 53 % sur un `1` et que le marche le cote a 1.88 (53 % implicites),
+suivre ce pronostic a une esperance nulle avant marge et negative apres. Sans les cotes
+on ne peut repondre qu'a « statarea se trompe-t-il ? » ; avec elles, on peut repondre a
+« peut-on en tirer quelque chose ? ».
+
+Elles donnent aussi une **seconde estimation de probabilite, independante** de celle de
+statarea. L'ecart entre les deux est un signal en soi.
+
+Le HTML brut des cotes serait trop lourd a versionner (6 Ko par match et par passage).
+Le parsing etant trivial, on archive directement les valeurs en JSONL gzippe, un fichier
+par jour dans `data/odds/`, append-only et jamais reecrit — meme principe que les
+instantanes HTML. Un releve identique au precedent n'est pas reecrit ; un releve qui a
+bouge est conserve en plus, parce que le mouvement des cotes est lui-meme une information.
+
+## Le fuseau horaire est fige en UTC
+
+statarea deduit le fuseau de l'adresse IP et affiche les heures dedans. Une collecte
+lancee depuis une autre machine voit donc les memes matchs a des heures differentes, et
+ceux qui encadrent minuit **changent de date**.
+
+Mesure sur nos propres archives avant correction : quatre fuseaux distincts selon la
+machine (GMT-4, GMT-7, GMT 0, GMT+1), et **5,9 % des matchs enregistres sous deux dates**,
+donc comptes deux fois dans toutes les statistiques.
+
+Deux corrections :
+
+1. La session de collecte fige le fuseau en **GMT 0** (`setCustomTimezone`, garde par le
+   cookie `statareacustomtimezone`).
+2. La cle d'un match est desormais **`sa_id`**, l'identifiant interne de statarea, seul
+   vraiment stable. `date|domicile|exterieur` reste en repli pour les rares lignes sans
+   `sa_id`. `match_date` et `kickoff` sont figes a leur premiere valeur connue.
+
+Les archives anterieures a la correction restent dans des fuseaux melanges : l'heure de
+quelques matchs y est imprecise de quelques heures. Les doublons, eux, ont disparu.
+
 ## L'indice residuel
 
 `python -m statarea residual --min 5`
