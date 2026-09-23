@@ -220,3 +220,58 @@ def collect(conn, session=None, today: Optional[str] = None, ahead: int = 3,
 
     return {"matchs": len(rows), "cotes": fetched, "sans_cote": empty,
             "echecs": failed, "archives": written, "enregistres": stored}
+
+
+# --------------------------------------------------------------------------
+# Comparaison des deux estimations
+
+# Tranches de probabilite de marche, pour lire le desaccord.
+PROB_BANDS = ((0, 10), (10, 20), (20, 30), (30, 40), (40, 50), (50, 65), (65, 101))
+
+
+def is_international(row) -> bool:
+    return "International" in (row["country"] or "")
+
+
+def probability_pairs(conn) -> list[dict]:
+    """Une entree par (match, issue) : probabilite du marche et de statarea.
+
+    Ne retient que les matchs ayant une cote relevee avant le coup d'envoi.
+    """
+    from . import db as _db
+
+    book = _db.closing_odds(conn)
+    out = []
+    for m in conn.execute("SELECT match_id, p1, px, p2, country, competition FROM matches"):
+        o = book.get(m["match_id"])
+        if not o or not (o["o1"] and o["ox"] and o["o2"]):
+            continue
+        if m["p1"] is None:
+            continue
+        q = implied(o["o1"], o["ox"], o["o2"])
+        for i, key in enumerate(("p1", "px", "p2")):
+            out.append({"market": q[i] * 100, "statarea": m[key],
+                        "international": is_international(m)})
+    return out
+
+
+def divergence_bands(pairs: list[dict], international: Optional[bool] = None) -> list[dict]:
+    """Ecart moyen (statarea - marche) par tranche de probabilite de marche.
+
+    Un ecart positif en bas et negatif en haut signe une COMPRESSION : le
+    modele gonfle les issues improbables et sous-estime les favoris nets,
+    comportement typique d'une estimation ramenee vers une moyenne faute
+    d'historique suffisant.
+    """
+    rows = pairs if international is None else [
+        p for p in pairs if p["international"] is international]
+    out = []
+    for lo, hi in PROB_BANDS:
+        sel = [p for p in rows if lo <= p["market"] < hi]
+        if len(sel) < 5:
+            continue
+        market = sum(p["market"] for p in sel) / len(sel)
+        site = sum(p["statarea"] for p in sel) / len(sel)
+        out.append({"band": f"{lo}-{hi}", "n": len(sel), "market": market,
+                    "statarea": site, "gap": site - market})
+    return out

@@ -250,3 +250,42 @@ def build_value_report(conn: sqlite3.Connection, since: Optional[str] = None,
         lines.append("  Une strategie qui ne bat pas ce temoin n'apporte aucune information.")
         lines.append("")
     return "\n".join(lines)
+
+
+def build_divergence_report(conn: sqlite3.Connection) -> str:
+    """Comparaison des deux estimations de probabilite : statarea et le marche."""
+    from . import odds as _odds
+
+    pairs = _odds.probability_pairs(conn)
+    lines = ["=" * 96,
+             "  STATAREA FACE AU MARCHE - deux estimations independantes",
+             "=" * 96, ""]
+    if not pairs:
+        lines.append("  Aucun match ne dispose d'une cote relevee avant son coup d'envoi.")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(f"  {len(pairs) // 3} matchs, {len(pairs)} couples de probabilites.")
+    lines.append("")
+    lines.append("  ATTENTION : ceci mesure un DESACCORD, pas une erreur. Que le marche soit")
+    lines.append("  plus juste que statarea est une presomption raisonnable, pas un resultat")
+    lines.append("  mesure. Seuls les matchs joues trancheront.")
+    lines.append("")
+
+    for label, flag in (("TOUS LES MATCHS", None), ("clubs", False), ("selections nationales", True)):
+        bands = _odds.divergence_bands(pairs, flag)
+        if not bands:
+            continue
+        lines.append("-" * 96)
+        lines.append(f"  {label}")
+        lines.append("-" * 96)
+        lines.append(f"  {'proba marche':16} {'n':>5} {'marche':>10} {'statarea':>10} {'ecart':>9}")
+        for b in bands:
+            lines.append(f"  {b['band'] + ' %':16} {b['n']:>5} {b['market']:>9.1f}% "
+                         f"{b['statarea']:>9.1f}% {b['gap']:>+8.1f}")
+        lines.append("")
+
+    lines.append("  Un ecart positif en bas et negatif en haut signe une COMPRESSION : le")
+    lines.append("  modele gonfle les issues improbables et sous-estime les favoris nets.")
+    lines.append("")
+    return "\n".join(lines)

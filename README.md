@@ -292,6 +292,33 @@ signal, et sur un signal plante elle doit le voir. Un troisieme verifie que le p
 confusion est bien neutralise — une equipe toujours favorite a 40 % qui gagne 40 % du
 temps a un taux brut alarmant de 60 % de surprises et un residu nul.
 
+## statarea face au marche
+
+`python -m statarea divergence`
+
+Les cotes donnent une seconde estimation de probabilite, independante de celle de
+statarea. Comparer les deux, par tranche de probabilite de marche, revele un motif net :
+
+| proba marche | marche | statarea | ecart |
+|---|---|---|---|
+| 0-10 % | 7,4 % | 13,2 % | **+5,8** |
+| 10-20 % | 16,4 % | 19,7 % | +3,3 |
+| 20-30 % | 25,8 % | 27,4 % | +1,6 |
+| 30-40 % | 34,3 % | 32,9 % | -1,4 |
+| 50-65 % | 56,8 % | 54,2 % | -2,7 |
+| 65-101 % | 73,4 % | 62,1 % | **-11,3** |
+
+Gradient monotone : **statarea comprime ses probabilites vers le milieu**. Il gonfle les
+issues improbables et sous-estime les favoris nets — comportement typique d'une
+estimation ramenee vers une moyenne faute d'historique suffisant.
+
+L'effet est bien plus marque sur les selections nationales (+6,7 en bas, -10,6 en haut)
+que sur les clubs (+1,8 / -3,3), ce qui appuie la meme explication.
+
+**Ceci mesure un desaccord, pas une erreur.** Que le marche soit plus juste que statarea
+est une presomption raisonnable, pas un resultat mesure. Seuls les matchs joues
+trancheront.
+
 ## La rentabilite
 
 `python -m statarea value`

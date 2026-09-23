@@ -125,3 +125,48 @@ class TestStore(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDivergence(unittest.TestCase):
+    """La compression doit etre detectee quand elle existe, et pas sinon."""
+
+    def setUp(self):
+        self.conn = db.connect(":memory:")
+
+    def _load(self, couples):
+        """couples : (proba_marche_domicile, proba_statarea_domicile)."""
+        from statarea.parser import Match
+        matches, records = [], []
+        for i, (q1, p1) in enumerate(couples):
+            reste = 100 - p1
+            matches.append(Match(
+                match_id=str(i), sa_id=str(i), match_date="2026-09-20", kickoff="18:00",
+                country="Test", competition="L", home=f"H{i}", away=f"A{i}",
+                prediction="1", p1=p1, px=reste // 2, p2=reste - reste // 2,
+                home_score=1, away_score=0, outcome=None, favorite=None,
+                fav_margin=None, surprise=None, upset=None, prediction_hit=None))
+            # Cote exacte pour q1, le reste partage a parts egales.
+            o1 = 100 / q1
+            autre = 2 * 100 / (100 - q1)
+            records.append({"sa_id": str(i), "fetched_at": "2026-09-20T10:00:00Z",
+                            "odds": {"o1": o1, "ox": autre, "o2": autre}})
+        db.upsert_matches(self.conn, matches)
+        db.upsert_odds(self.conn, records)
+
+    def test_no_divergence_when_sources_agree(self):
+        self._load([(q, q) for q in (8, 15, 25, 35, 45, 55, 70)] * 4)
+        for b in odds.divergence_bands(odds.probability_pairs(self.conn)):
+            if b["band"] in ("0-10", "65-101"):
+                self.assertAlmostEqual(b["gap"], 0.0, delta=1.5)
+
+    def test_compression_is_visible_as_a_sign_flip(self):
+        """statarea comprime : +10 en bas, -10 en haut."""
+        self._load([(8, 18), (12, 22), (70, 60), (75, 65)] * 6)
+        bands = {b["band"]: b for b in odds.divergence_bands(odds.probability_pairs(self.conn))}
+        self.assertGreater(bands["0-10"]["gap"], 5)
+        self.assertLess(bands["65-101"]["gap"], -5)
+
+    def test_matches_without_prematch_odds_are_excluded(self):
+        self._load([(25, 25)] * 6)
+        self.conn.execute("UPDATE odds SET fetched_at = '2026-09-20T23:00:00Z'")
+        self.assertEqual(odds.probability_pairs(self.conn), [])
