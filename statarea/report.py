@@ -119,29 +119,42 @@ def build_report(
 
 def build_residual_report(conn: sqlite3.Connection, min_matches: int = 5,
                           top: int = 15, since: Optional[str] = None,
-                          until: Optional[str] = None) -> str:
-    """Indice residuel : l'ecart a ce que statarea annoncait."""
+                          until: Optional[str] = None,
+                          baseline: str = "statarea") -> str:
+    """Indice residuel : l'ecart a ce que la reference annoncait."""
     from . import residual
 
-    lines = ["=" * 96, "  INDICE RESIDUEL - ecart entre l'observe et ce que statarea annoncait",
-             "=" * 96, ""]
+    REFERENCE = {
+        "statarea": "les pourcentages publies par statarea",
+        "market": "la cote de cloture du marche (marge retiree)",
+    }[baseline]
+
+    titre = {"statarea": "ecart entre l'observe et ce que statarea annoncait",
+             "market": "ecart entre l'observe et ce que le marche annoncait"}[baseline]
+    lines = ["=" * 96, f"  INDICE RESIDUEL - {titre}", "=" * 96, ""]
 
     lines.append("  Le taux de surprise brut par equipe melange fragilite propre et difficulte")
-    lines.append("  des matchs. L'indice residuel compare l'observe aux pourcentages publies,")
-    lines.append("  match par match, ce qui neutralise ce biais.")
+    lines.append("  des matchs. L'indice residuel compare l'observe a une reference, match par")
+    lines.append("  match, ce qui neutralise ce biais.")
+    lines.append("")
+    lines.append(f"  reference utilisee : {REFERENCE}")
+    if baseline == "market":
+        lines.append("  Reference bien plus exigeante : le marche integre blessures, compositions")
+        lines.append("  et argent mise. Seuls les matchs ayant une cote relevee AVANT le coup")
+        lines.append("  d'envoi sont retenus.")
     lines.append("")
 
     for role, titre, sens in (
         ("favorite", "EN TANT QUE FAVORITE", "decoit plus que sa cote ne l'annoncait"),
         ("underdog", "EN TANT QU'OUTSIDER", "cree la surprise plus souvent qu'annonce"),
     ):
-        offset, n = residual.calibration_offset(conn, role, since, until)
-        over = residual.overdispersion(conn, role, min_matches, since, until)
+        offset, n = residual.calibration_offset(conn, role, since, until, baseline)
+        over = residual.overdispersion(conn, role, min_matches, since, until, baseline)
 
         lines.append("-" * 96)
         lines.append(f"  {titre}   ({n} matchs)")
         lines.append("-" * 96)
-        lines.append(f"  biais global de statarea   : {offset * 100:+.1f} points")
+        lines.append(f"  biais global de la reference: {offset * 100:+.1f} points")
 
         if over["sd"] is None:
             lines.append(f"  test de surdispersion      : {over['verdict']} "
@@ -160,7 +173,7 @@ def build_residual_report(conn: sqlite3.Connection, min_matches: int = 5,
         lines.append(f"  equipes au-dela de |z|>2   : {over['significant']} sur {over['teams']}")
         lines.append("")
 
-        teams = residual.team_residuals(conn, role, min_matches, since, until)
+        teams = residual.team_residuals(conn, role, min_matches, since, until, baseline)
         if not teams:
             lines.append("  (aucune equipe n'atteint le seuil)")
             lines.append("")
@@ -183,4 +196,57 @@ def build_residual_report(conn: sqlite3.Connection, min_matches: int = 5,
     lines.append("    par pur hasard : ne regardez le classement que si la dispersion des z")
     lines.append("    depasse nettement 1.")
     lines.append("")
+    return "\n".join(lines)
+
+
+def build_value_report(conn: sqlite3.Connection, since: Optional[str] = None,
+                       until: Optional[str] = None) -> str:
+    """Rendement des strategies, cotes de cloture uniquement."""
+    from . import value
+
+    results = value.evaluate(conn, since, until)
+    margin = value.book_margin(conn)
+    covered = len(__import__("statarea.db", fromlist=["db"]).closing_odds(conn))
+
+    lines = ["=" * 96,
+             "  RENTABILITE - que rapporterait reellement le fait de suivre les pronostics",
+             "=" * 96, ""]
+    lines.append("  Seules les cotes relevees AVANT le coup d'envoi sont utilisees.")
+    lines.append(f"  matchs disposant d'une cote de cloture : {covered}")
+    if margin is not None:
+        lines.append(f"  marge mediane du bookmaker             : {margin * 100:.1f} %")
+        lines.append(f"  -> un parieur sans information perd environ {margin * 100:.0f} % a long terme.")
+    lines.append("")
+
+    playable = [r for r in results.values() if r.n]
+    if not playable:
+        lines.append("  Aucun match joue ne dispose encore d'une cote relevee avant son coup")
+        lines.append("  d'envoi. Les cotes ne se collectant que vers l'avant, les premiers")
+        lines.append("  resultats arriveront apres le prochain passage sur des matchs joues.")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(f"  {'strategie':46} {'n':>5} {'reussis':>8} {'rendement':>11} {'t':>7}")
+    lines.append("  " + "-" * 82)
+    for key in ("statarea_simple", "statarea_double", "favori", "domicile"):
+        r = results[key]
+        if not r.n:
+            continue
+        roi = f"{r.roi * 100:+.1f} %"
+        t = f"{r.t:+.2f}" if r.t is not None else "  n/a"
+        flag = " *" if r.significant else ""
+        lines.append(f"  {r.label[:46]:46} {r.n:>5} {r.hits:>8} {roi:>11} {t:>7}{flag}")
+    lines.append("")
+    lines.append("  * |t| > 2. Un rendement positif NON significatif ne prouve rien : avec")
+    lines.append("    quelques centaines de paris, un ecart de plusieurs points est courant")
+    lines.append("    par pur hasard.")
+    lines.append("")
+
+    simple = results["statarea_simple"]
+    favori = results["favori"]
+    if simple.n and favori.n and simple.roi is not None and favori.roi is not None:
+        delta = (simple.roi - favori.roi) * 100
+        lines.append(f"  Ecart au temoin 'toujours le favori' : {delta:+.1f} points.")
+        lines.append("  Une strategie qui ne bat pas ce temoin n'apporte aucune information.")
+        lines.append("")
     return "\n".join(lines)

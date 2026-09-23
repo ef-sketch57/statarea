@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 Role = Literal["favorite", "underdog"]
+Baseline = Literal["statarea", "market"]
 
 # En dessous, un classement n'a aucun sens : le bruit domine.
 MIN_MATCHES = 5
@@ -94,46 +95,81 @@ class TeamResidual:
         return z is not None and abs(z) > 2
 
 
-# p_favori et p_outsider selon le camp designe favori, normalises.
-_EXPR = {
-    "favorite": """
-        SELECT home AS team,
-               1.0 - CAST(p1 AS REAL) / (p1 + px + p2) AS p,
-               surprise AS hit
-        FROM matches WHERE favorite = 'home' AND surprise IS NOT NULL {extra}
-        UNION ALL
-        SELECT away, 1.0 - CAST(p2 AS REAL) / (p1 + px + p2), surprise
-        FROM matches WHERE favorite = 'away' AND surprise IS NOT NULL {extra}
-    """,
-    "underdog": """
-        SELECT away AS team,
-               CAST(p2 AS REAL) / (p1 + px + p2) AS p,
-               upset AS hit
-        FROM matches WHERE favorite = 'home' AND upset IS NOT NULL {extra}
-        UNION ALL
-        SELECT home, CAST(p1 AS REAL) / (p1 + px + p2), upset
-        FROM matches WHERE favorite = 'away' AND upset IS NOT NULL {extra}
-    """,
-}
+def _expectation_rows(conn: sqlite3.Connection, role: Role, baseline: Baseline,
+                      since: Optional[str], until: Optional[str]) -> list[dict]:
+    """Un enregistrement par (equipe, match) : probabilite attendue et issue.
 
+    Deux references possibles :
 
-def _rows(conn: sqlite3.Connection, role: Role,
-          since: Optional[str] = None, until: Optional[str] = None):
-    clauses, params = [], []
+    - "statarea" : la probabilite annoncee par le site. Mesure l'ecart a ce que
+      statarea prevoyait.
+    - "market" : la probabilite implicite de la cote de CLOTURE, marge du
+      bookmaker retiree au prorata. Reference bien plus exigeante - le marche
+      integre les blessures, les compositions et l'argent mise - et la seule
+      qui mene a une conclusion sur la rentabilite.
+
+    Avec "market", seuls les matchs disposant d'une cote relevee AVANT le coup
+    d'envoi sont retenus.
+    """
+    from .odds import implied
+
+    clauses = ["favorite IS NOT NULL", "outcome IS NOT NULL",
+               "p1 IS NOT NULL", "px IS NOT NULL", "p2 IS NOT NULL"]
+    params: list = []
     if since:
         clauses.append("match_date >= ?")
         params.append(since)
     if until:
         clauses.append("match_date <= ?")
         params.append(until)
-    extra = ("AND " + " AND ".join(clauses)) if clauses else ""
-    return conn.execute(_EXPR[role].format(extra=extra), params * 2).fetchall()
+
+    matches = conn.execute(
+        f"""SELECT match_id, home, away, p1, px, p2, favorite, surprise, upset
+            FROM matches WHERE {" AND ".join(clauses)}""", params).fetchall()
+
+    book = {}
+    if baseline == "market":
+        from . import db as _db
+        book = _db.closing_odds(conn)
+
+    rows: list[dict] = []
+    for m in matches:
+        if baseline == "market":
+            o = book.get(m["match_id"])
+            if not o or not (o["o1"] and o["ox"] and o["o2"]):
+                continue
+            q1, _qx, q2, _marge = implied(o["o1"], o["ox"], o["o2"])
+        else:
+            total = m["p1"] + m["px"] + m["p2"]
+            q1, q2 = m["p1"] / total, m["p2"] / total
+
+        fav_home = m["favorite"] == "home"
+        if role == "favorite":
+            team = m["home"] if fav_home else m["away"]
+            p = 1 - (q1 if fav_home else q2)     # le favori ne gagne pas
+            hit = m["surprise"]
+        else:
+            team = m["away"] if fav_home else m["home"]
+            p = q2 if fav_home else q1           # l'outsider gagne
+            hit = m["upset"]
+
+        if hit is None or p is None:
+            continue
+        rows.append({"team": team, "p": p, "hit": hit})
+    return rows
+
+
+def _rows(conn: sqlite3.Connection, role: Role,
+          since: Optional[str] = None, until: Optional[str] = None,
+          baseline: Baseline = "statarea") -> list[dict]:
+    return _expectation_rows(conn, role, baseline, since, until)
 
 
 def calibration_offset(conn: sqlite3.Connection, role: Role = "favorite",
-                       since: Optional[str] = None, until: Optional[str] = None) -> tuple[float, int]:
-    """Biais global de statarea sur l'echantillon : (observe - attendu) par match."""
-    rows = _rows(conn, role, since, until)
+                       since: Optional[str] = None, until: Optional[str] = None,
+                       baseline: Baseline = "statarea") -> tuple[float, int]:
+    """Biais global de la reference sur l'echantillon : (observe - attendu) par match."""
+    rows = _rows(conn, role, since, until, baseline)
     if not rows:
         return 0.0, 0
     return sum(r["hit"] - r["p"] for r in rows) / len(rows), len(rows)
@@ -142,8 +178,9 @@ def calibration_offset(conn: sqlite3.Connection, role: Role = "favorite",
 def team_residuals(conn: sqlite3.Connection, role: Role = "favorite",
                    min_matches: int = MIN_MATCHES,
                    since: Optional[str] = None,
-                   until: Optional[str] = None) -> list[TeamResidual]:
-    rows = _rows(conn, role, since, until)
+                   until: Optional[str] = None,
+                   baseline: Baseline = "statarea") -> list[TeamResidual]:
+    rows = _rows(conn, role, since, until, baseline)
 
     agg: dict[str, dict[str, float]] = {}
     for r in rows:
@@ -174,13 +211,14 @@ def team_residuals(conn: sqlite3.Connection, role: Role = "favorite",
 def overdispersion(conn: sqlite3.Connection, role: Role = "favorite",
                    min_matches: int = MIN_MATCHES,
                    since: Optional[str] = None,
-                   until: Optional[str] = None) -> dict:
+                   until: Optional[str] = None,
+                   baseline: Baseline = "statarea") -> dict:
     """Le seul test qui dise si l'hypothese tient.
 
     Sous l'hypothese nulle - aucune equipe n'a de propension propre - les z se
     distribuent en normale centree reduite. sd nettement > 1 = signal reel.
     """
-    teams = team_residuals(conn, role, min_matches, since, until)
+    teams = team_residuals(conn, role, min_matches, since, until, baseline)
     zs = [t.z for t in teams if t.z is not None]
     if len(zs) < 2:
         return {"teams": len(zs), "sd": None, "mean": None, "reliable": False,

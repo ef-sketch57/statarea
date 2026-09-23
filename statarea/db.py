@@ -199,6 +199,29 @@ def upsert_odds(conn: sqlite3.Connection, records) -> int:
     return conn.execute("SELECT COUNT(*) FROM odds").fetchone()[0] - before
 
 
+CLOSING_ODDS_SQL = """
+    SELECT o.* FROM odds o
+    JOIN (
+        SELECT o2.match_id, MAX(o2.fetched_at) AS fetched_at
+        FROM odds o2 JOIN matches m2 ON m2.match_id = o2.match_id
+        -- Strictement AVANT le coup d'envoi : une cote relevee pendant ou
+        -- apres le match n'est plus une prevision, et l'utiliser serait
+        -- regarder le resultat avant de parier.
+        WHERE o2.fetched_at < m2.match_date || 'T' || COALESCE(m2.kickoff, '00:00') || ':00Z'
+        GROUP BY o2.match_id
+    ) last ON last.match_id = o.match_id AND last.fetched_at = o.fetched_at
+"""
+
+
+def closing_odds(conn: sqlite3.Connection) -> dict:
+    """Dernier releve de cotes anterieur au coup d'envoi, par match.
+
+    C'est la "ligne de cloture" : l'estimation du marche la plus informee dont
+    on dispose sans jamais regarder apres le match.
+    """
+    return {r["match_id"]: r for r in conn.execute(CLOSING_ODDS_SQL)}
+
+
 def latest_odds(conn: sqlite3.Connection, match_id: str) -> Optional[sqlite3.Row]:
     """Dernier releve connu pour un match."""
     return conn.execute(

@@ -276,6 +276,11 @@ residu a cet ecart-type, ce qui tient compte du fait qu'un match a 50/50 est bie
 bruite qu'un match a 90/10. Le biais de reference retire est calcule **en excluant
 l'equipe evaluee**, sinon une equipe qui pese lourd annule une partie de son propre signal.
 
+**Deux references possibles.** `--baseline statarea` compare l'observe aux pourcentages
+du site. `--baseline market` le compare a la cote de cloture, marge retiree : une
+reference bien plus exigeante, puisque le marche integre blessures, compositions et
+argent mise. C'est celle qui mene a une conclusion sur la rentabilite.
+
 **Le seul resultat a regarder d'abord.** Si aucune equipe n'a de propension propre, les
 z se distribuent en normale centree reduite, d'ecart-type 1. Une surdispersion nette est
 la signature d'un signal reel. Tant que la dispersion ne depasse pas 1, **le classement
@@ -286,6 +291,31 @@ Deux tests verrouillent la machinerie : sur du bruit pur elle ne doit annoncer a
 signal, et sur un signal plante elle doit le voir. Un troisieme verifie que le piege de
 confusion est bien neutralise — une equipe toujours favorite a 40 % qui gagne 40 % du
 temps a un taux brut alarmant de 60 % de surprises et un residu nul.
+
+## La rentabilite
+
+`python -m statarea value`
+
+Justesse et rentabilite sont deux choses sans rapport. Un pronostic juste a 53 % cote
+1.88 (53 % implicites) a une esperance nulle avant marge, negative apres. La question
+n'est donc jamais « statarea a-t-il raison ? » mais « a-t-il plus souvent raison que la
+cote ne le suppose ? ».
+
+**Regle absolue** : seules les cotes relevees **strictement avant le coup d'envoi** sont
+utilisees. Une cote posterieure reviendrait a parier en connaissant le resultat, et
+produirait des rendements imaginaires — un bug invisible dans les resultats. Un test le
+verrouille.
+
+**Doubles chances.** statarea produit aussi des `1X`, `X2` et `12`, alors que l'endpoint
+ne sert que les cotes 1, X et 2. La cote est donc reconstituee par
+`cote(A ou B) = (cote_A x cote_B) / (cote_A + cote_B)`, la combinaison exacte des
+probabilites implicites. Elle reste une reconstitution, et les resultats la distinguent
+des paris simples, qui eux sont exacts.
+
+**Les temoins.** Un rendement ne se lit jamais seul : le rapport compare toujours au fait
+de parier systematiquement le favori et systematiquement le domicile. Une strategie qui
+ne bat pas ces temoins n'apporte rien. Avec une marge mediane mesuree a **10,2 %**, le
+rendement de reference d'un parieur sans information est d'environ -10 %.
 
 ## Le site
 
