@@ -203,6 +203,46 @@ Deux pièges, tous deux gérés :
   statarea le change un jour, le parsing s'arrête au lieu d'inverser silencieusement
   `p1` et `p2`.
 
+## L'indice residuel
+
+`python -m statarea residual --min 5`
+
+**Pourquoi pas le taux brut.** Un taux de surprise brut par equipe melange deux choses :
+la fragilite propre de l'equipe, et la difficulte de ses matchs. Une equipe toujours
+favorite a 40/32/28 sera surprise bien plus souvent qu'une equipe favorite a 65/22/13,
+sans qu'aucune fragilite n'entre en jeu. Un classement bati sur le taux brut
+redecouvrirait surtout « les equipes qui jouent des matchs serres ».
+
+L'indice residuel compare l'observe a ce que les pourcentages annoncaient, match par
+match :
+
+```
+attendu(surprise) = 1 - p_favori / 100
+attendu(upset)    = p_outsider / 100
+residu            = observe - attendu
+```
+
+La calibration de statarea ayant ete mesuree comme bonne (ecarts dans le bruit sur
+761 matchs), ces attendus sont une reference honnete : **rien n'est ajuste sur les
+donnees**, donc aucun risque de surapprentissage et rien a re-entrainer.
+
+**Significativite.** Chaque match est un tirage de Bernoulli de probabilite propre ; la
+somme suit une loi de Poisson-binomiale de variance `sum p(1-p)`. Le z-score compare le
+residu a cet ecart-type, ce qui tient compte du fait qu'un match a 50/50 est bien plus
+bruite qu'un match a 90/10. Le biais de reference retire est calcule **en excluant
+l'equipe evaluee**, sinon une equipe qui pese lourd annule une partie de son propre signal.
+
+**Le seul resultat a regarder d'abord.** Si aucune equipe n'a de propension propre, les
+z se distribuent en normale centree reduite, d'ecart-type 1. Une surdispersion nette est
+la signature d'un signal reel. Tant que la dispersion ne depasse pas 1, **le classement
+ne vaut rien**, quelles que soient les etoiles affichees. En dessous de 5 matchs par
+equipe, le test lui-meme n'est pas fiable et le rapport le signale.
+
+Deux tests verrouillent la machinerie : sur du bruit pur elle ne doit annoncer aucun
+signal, et sur un signal plante elle doit le voir. Un troisieme verifie que le piege de
+confusion est bien neutralise — une equipe toujours favorite a 40 % qui gagne 40 % du
+temps a un taux brut alarmant de 60 % de surprises et un residu nul.
+
 ## Le site
 
 `python -m statarea site` genere un site statique dans `dist/` : les matchs a venir,
@@ -211,6 +251,11 @@ avec le pronostic statarea, les pourcentages 1/X/2 et la **marge du favori**.
 C'est la marge qui justifie le site : la prediction seule ne distingue pas un `1` a
 63/25/12 (marge 38, favori net) d'un `1` a 38/33/29 (marge 5, pile ou face). Les deux
 s'affichent `1` chez statarea.
+
+Le site affiche aussi le gradient mesure par tranche de marge, et **separe les taux de
+reussite simples et doubles chances** : un pronostic `1X` couvre deux issues sur trois,
+son taux eleve releve de l'arithmetique et non de la performance. Les agreger donnait un
+chiffre flatteur et vide de sens.
 
 Le site est une simple vue de la base, sans etat propre : il se reconstruit entierement
 depuis `data/raw/`.

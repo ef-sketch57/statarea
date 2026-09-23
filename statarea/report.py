@@ -115,3 +115,72 @@ def build_report(
         lines.append("")
 
     return "\n".join(lines)
+
+
+def build_residual_report(conn: sqlite3.Connection, min_matches: int = 5,
+                          top: int = 15, since: Optional[str] = None,
+                          until: Optional[str] = None) -> str:
+    """Indice residuel : l'ecart a ce que statarea annoncait."""
+    from . import residual
+
+    lines = ["=" * 96, "  INDICE RESIDUEL - ecart entre l'observe et ce que statarea annoncait",
+             "=" * 96, ""]
+
+    lines.append("  Le taux de surprise brut par equipe melange fragilite propre et difficulte")
+    lines.append("  des matchs. L'indice residuel compare l'observe aux pourcentages publies,")
+    lines.append("  match par match, ce qui neutralise ce biais.")
+    lines.append("")
+
+    for role, titre, sens in (
+        ("favorite", "EN TANT QUE FAVORITE", "decoit plus que sa cote ne l'annoncait"),
+        ("underdog", "EN TANT QU'OUTSIDER", "cree la surprise plus souvent qu'annonce"),
+    ):
+        offset, n = residual.calibration_offset(conn, role, since, until)
+        over = residual.overdispersion(conn, role, min_matches, since, until)
+
+        lines.append("-" * 96)
+        lines.append(f"  {titre}   ({n} matchs)")
+        lines.append("-" * 96)
+        lines.append(f"  biais global de statarea   : {offset * 100:+.1f} points")
+
+        if over["sd"] is None:
+            lines.append(f"  test de surdispersion      : {over['verdict']} "
+                         f"({over['teams']} equipe(s) au seuil de {min_matches} matchs)")
+            lines.append("")
+            lines.append(f"  Aucun classement publie : en dessous de {min_matches} matchs par equipe,")
+            lines.append("  les ecarts ne sont que du bruit d'echantillonnage.")
+            lines.append("")
+            continue
+
+        lines.append(f"  dispersion des z observee  : {over['sd']:.2f}  "
+                     f"(attendue 1.00 +/- {2 * over['se']:.2f} si aucun signal)")
+        lines.append(f"  verdict                    : {over['verdict']}")
+        if not over.get("reliable"):
+            lines.append("  ! Chiffre non interpretable : relancez avec --min 5 ou plus.")
+        lines.append(f"  equipes au-dela de |z|>2   : {over['significant']} sur {over['teams']}")
+        lines.append("")
+
+        teams = residual.team_residuals(conn, role, min_matches, since, until)
+        if not teams:
+            lines.append("  (aucune equipe n'atteint le seuil)")
+            lines.append("")
+            continue
+
+        lines.append(f"  {'equipe':28} {'n':>4} {'obs':>5} {'attendu':>8} "
+                     f"{'ecart/match':>12} {'z':>7}")
+        lines.append("  " + "-" * 70)
+        for t in teams[:top]:
+            flag = " *" if t.significant else ""
+            lines.append(f"  {t.team[:28]:28} {t.n:>4} {t.observed:>5} {t.expected:>8.1f} "
+                         f"{t.per_match:>+11.1f}% {t.z:>7.2f}{flag}")
+        if len(teams) > top:
+            lines.append(f"  ... et {len(teams) - top} autres. "
+                         f"({sens})")
+        lines.append("")
+
+    lines.append("  * |z| > 2, soit environ 5 % de faux positifs AVANT correction pour tests")
+    lines.append("    multiples. Avec des centaines d'equipes, quelques etoiles sont attendues")
+    lines.append("    par pur hasard : ne regardez le classement que si la dispersion des z")
+    lines.append("    depasse nettement 1.")
+    lines.append("")
+    return "\n".join(lines)

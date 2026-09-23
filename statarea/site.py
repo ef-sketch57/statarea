@@ -116,6 +116,43 @@ def _match_row(row: sqlite3.Row) -> str:
       </article>"""
 
 
+# Tranches de marge. Le gradient est net et c'est l'information la plus
+# solide dont nous disposions aujourd'hui.
+BANDS = ((0, 5, "0-4"), (5, 10, "5-9"), (10, 20, "10-19"),
+         (20, 30, "20-29"), (30, 101, "30 et +"))
+
+
+def margin_bands(conn: sqlite3.Connection) -> list[dict]:
+    out = []
+    for lo, hi, label in BANDS:
+        r = conn.execute(
+            """SELECT COUNT(*) n, AVG(surprise = 0) win,
+                      AVG(surprise = 1 AND upset = 0) draw, AVG(upset) ups
+               FROM matches
+               WHERE outcome IS NOT NULL AND favorite IS NOT NULL
+                 AND fav_margin >= ? AND fav_margin < ?""", (lo, hi)).fetchone()
+        if r["n"]:
+            out.append({"label": label, "n": r["n"], "win": r["win"] * 100,
+                        "draw": r["draw"] * 100, "ups": r["ups"] * 100})
+    return out
+
+
+def hit_rates(conn: sqlite3.Connection) -> dict:
+    """Simples et doubles chances separes.
+
+    Les agreger n'a aucun sens : un pronostic `1X` couvre deux issues sur trois,
+    son taux eleve est de l'arithmetique, pas de la performance.
+    """
+    out = {}
+    for key, preds in (("simple", ("1", "X", "2")), ("double", ("1X", "X2", "12"))):
+        r = conn.execute(
+            f"""SELECT COUNT(*) n, SUM(prediction_hit) h FROM matches
+                WHERE prediction_hit IS NOT NULL
+                  AND prediction IN ({",".join("?" * len(preds))})""", preds).fetchone()
+        out[key] = {"n": r["n"] or 0, "rate": (r["h"] / r["n"]) if r["n"] else None}
+    return out
+
+
 def _summary(conn: sqlite3.Connection) -> dict:
     s = stats.global_summary(conn)
     s["total"] = db.count(conn)
@@ -124,11 +161,44 @@ def _summary(conn: sqlite3.Connection) -> dict:
         "SELECT MIN(match_date) a, MAX(match_date) b FROM matches WHERE outcome IS NOT NULL"
     ).fetchone()
     s["from"], s["to"] = short_date(row["a"]), short_date(row["b"])
+    s["hits"] = hit_rates(conn)
+    s["bands"] = margin_bands(conn)
     return s
 
 
 def _pct(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value * 100:.0f} %"
+
+
+def _bands_table(bands: list[dict]) -> str:
+    if not bands:
+        return ""
+    rows = "".join(
+        f'<tr><th scope="row">{b["label"]}</th><td class="n n-col">{b["n"]}</td>'
+        f'<td class="viz"><div class="bar">'
+        f'<div class="seg seg-home" style="flex-grow:{b["win"]:.1f}"></div>'
+        f'<div class="seg seg-draw" style="flex-grow:{b["draw"]:.1f}"></div>'
+        f'<div class="seg seg-away" style="flex-grow:{b["ups"]:.1f}"></div>'
+        f'</div></td>'
+        f'<td class="v">{b["win"]:.0f} %</td><td class="v">{b["draw"]:.0f} %</td>'
+        f'<td class="v">{b["ups"]:.0f} %</td></tr>'
+        for b in bands
+    )
+    return f"""
+  <section class="bands">
+    <h2>Ce que la marge annonce</h2>
+    <table>
+      <thead><tr><th scope="col">marge</th><th scope="col" class="n-col">matchs</th>
+        <th scope="col"></th>
+        <th scope="col"><i class="chip chip-home"></i><span class="lg"> favori gagne</span><span class="sm"> favori</span></th>
+        <th scope="col"><i class="chip chip-draw"></i> nul</th>
+        <th scope="col"><i class="chip chip-away"></i> upset</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+    <p class="cap">Le risque d'upset est multiplie par trois entre un favori net et un
+    favori serre. C'est l'information la plus solide dont nous disposions aujourd'hui,
+    et elle ne demande aucun modele.</p>
+  </section>"""
 
 
 def render(conn: sqlite3.Connection, today: Optional[str] = None) -> str:
@@ -157,9 +227,10 @@ def render(conn: sqlite3.Connection, today: Optional[str] = None) -> str:
     return TEMPLATE.format(
         built=built, sections=sections,
         total=s["total"], played=s["played"], span_from=s["from"], span_to=s["to"],
-        hit=_pct(s["prediction_hit_rate"]), hit_n=s["prediction_n"],
+        hit_s=_pct(s["hits"]["simple"]["rate"]), hit_s_n=s["hits"]["simple"]["n"],
+        hit_d=_pct(s["hits"]["double"]["rate"]), hit_d_n=s["hits"]["double"]["n"],
         surprise=_pct(s["surprise_rate"]), upset=_pct(s["upset_rate"]),
-        upcoming=len(rows),
+        upcoming=len(rows), bands=_bands_table(s["bands"]),
     )
 
 
@@ -277,6 +348,31 @@ TEMPLATE = """<!DOCTYPE html>
   .tier-aucun {{ color:var(--muted); font-style:italic; }}
   .margin {{ font-variant-numeric:tabular-nums; color:var(--muted); font-weight:400; }}
 
+  .bands {{ margin-bottom:28px; }}
+  .bands h2 {{
+    font-size:.82rem; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--ink-2); font-weight:600; margin:0 0 8px;
+  }}
+  .bands table {{
+    width:100%; border-collapse:collapse; background:var(--surface);
+    border:1px solid var(--rule); border-radius:10px; overflow:hidden;
+  }}
+  .bands th, .bands td {{ padding:9px 12px; text-align:left; font-weight:400; }}
+  .bands thead th {{
+    font-size:.74rem; color:var(--ink-2); border-bottom:1px solid var(--rule);
+    white-space:nowrap;
+  }}
+  .bands thead th .chip {{ margin-right:4px; vertical-align:baseline; }}
+  .bands tbody tr {{ border-top:1px solid var(--rule); }}
+  .bands tbody tr:first-child {{ border-top:0; }}
+  .bands tbody th {{ font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }}
+  .bands .n, .bands .v {{ font-variant-numeric:tabular-nums; color:var(--ink-2); }}
+  .bands .v {{ text-align:right; white-space:nowrap; }}
+  .bands thead th:nth-child(n+4) {{ text-align:right; }}
+  .bands .sm {{ display:none; }}
+  .bands .viz {{ width:34%; min-width:120px; }}
+  .cap {{ color:var(--ink-2); font-size:.82rem; margin:10px 2px 0; }}
+
   .empty {{ padding:16px; color:var(--ink-2); }}
   code {{ background:var(--plane); padding:1px 5px; border-radius:4px; font-size:.85em; }}
   footer {{ margin-top:40px; color:var(--muted); font-size:.8rem; border-top:1px solid var(--rule); padding-top:14px; }}
@@ -284,6 +380,10 @@ TEMPLATE = """<!DOCTYPE html>
   @media (max-width:760px) {{
     .match {{ grid-template-columns:52px minmax(0,1fr); }}
     .odds, .verdict {{ grid-column:1 / -1; }}
+    .bands .viz, .bands .n-col {{ display:none; }}
+    .bands th, .bands td {{ padding:8px 6px; font-size:.84rem; }}
+    .bands .lg {{ display:none; }}
+    .bands .sm {{ display:inline; }}
     .verdict {{ margin-top:2px; }}
   }}
 </style>
@@ -298,7 +398,8 @@ TEMPLATE = """<!DOCTYPE html>
   <div class="facts">
     <div class="fact"><span class="v">{total}</span><span class="k">matchs en base</span></div>
     <div class="fact"><span class="v">{played}</span><span class="k">joues, du {span_from} au {span_to}</span></div>
-    <div class="fact"><span class="v">{hit}</span><span class="k">pronostics justes ({hit_n})</span></div>
+    <div class="fact"><span class="v">{hit_s}</span><span class="k">pronostics simples justes ({hit_s_n})</span></div>
+    <div class="fact"><span class="v">{hit_d}</span><span class="k">doubles chances justes ({hit_d_n})</span></div>
     <div class="fact"><span class="v">{surprise}</span><span class="k">favoris battus ou tenus en echec</span></div>
     <div class="fact"><span class="v">{upset}</span><span class="k">victoires d'outsider</span></div>
   </div>
@@ -309,10 +410,17 @@ TEMPLATE = """<!DOCTYPE html>
     Un match sans favori est un match ou le nul arrive en tete : il est affiche, mais exclu
     des statistiques de surprise.
     <br><br>
+    Les deux taux de reussite sont volontairement <b>separes</b> : un pronostic double
+    (<code>1X</code>, <code>X2</code>, <code>12</code>) couvre deux issues sur trois, son
+    taux eleve releve de l'arithmetique et non de la performance. Les agreger donnerait un
+    chiffre flatteur et vide de sens.
+    <br><br>
     <b>Les indices de fiabilite par equipe ne sont pas encore la</b> : ils demandent plusieurs
     semaines de collecte. Les chiffres ci-dessus portent sur {played} matchs seulement et ne
     sont pas exploitables en l'etat.
   </p>
+
+  {bands}
 
   {sections}
 

@@ -6,6 +6,7 @@
     python -m statarea reparse                           # re-parse les archives, sans reseau
     python -m statarea recompute                         # rejoue les regles sur la base
     python -m statarea show --date 2026-09-19 --limit 20 # inspection
+    python -m statarea residual --min 5                  # indice residuel par equipe
     python -m statarea site                              # genere le site dans dist/
     python -m statarea report --min-fav 5 --min-dog 5
 """
@@ -60,6 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("dates", help="couverture de la base, par date")
     _add_common(p)
+
+    p = sub.add_parser("residual", help="indice residuel : ecart a ce qu'annoncait statarea")
+    _add_common(p)
+    p.add_argument("--min", type=int, default=5, dest="min_matches",
+                   help="minimum de matchs par equipe et par role (defaut: 5)")
+    p.add_argument("--top", type=int, default=15)
+    p.add_argument("--since")
+    p.add_argument("--until")
 
     p = sub.add_parser("site", help="genere le site statique dans dist/")
     _add_common(p)
@@ -204,6 +213,13 @@ def cmd_dates(args) -> int:
     return 0
 
 
+def cmd_residual(args) -> int:
+    conn = db.connect(args.db)
+    print(report.build_residual_report(conn, min_matches=args.min_matches, top=args.top,
+                                       since=args.since, until=args.until))
+    return 0
+
+
 def cmd_site(args) -> int:
     conn = db.connect(args.db)
     page = site.build(conn, args.out, args.today)
@@ -224,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     return {
         "scrape": cmd_scrape, "reparse": cmd_reparse, "recompute": cmd_recompute,
-        "show": cmd_show, "dates": cmd_dates, "site": cmd_site, "report": cmd_report,
+        "show": cmd_show, "dates": cmd_dates, "site": cmd_site,
+        "report": cmd_report, "residual": cmd_residual,
     }[args.command](args)
 
 

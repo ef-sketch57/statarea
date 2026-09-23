@@ -1,0 +1,211 @@
+"""Indice residuel par equipe : l'ecart a ce que statarea annoncait.
+
+POURQUOI PAS LE TAUX BRUT
+-------------------------
+Un taux de surprise brut par equipe melange deux choses : la fragilite propre
+de l'equipe, et la difficulte de ses matchs. Une equipe toujours favorite a
+40/32/28 sera surprise bien plus souvent qu'une equipe favorite a 65/22/13,
+sans qu'aucune fragilite n'entre en jeu. Un classement construit sur le taux
+brut redecouvrirait donc surtout "les equipes qui jouent des matchs serres".
+
+L'indice residuel corrige ca : on compare l'observe a ce que les pourcentages
+de statarea annoncaient, match par match.
+
+    attendu(surprise)  = 1 - p_favori / 100     (le favori ne gagne pas)
+    attendu(upset)     = p_outsider / 100       (l'outsider gagne)
+
+La calibration de statarea ayant ete verifiee comme bonne, ces attendus sont
+une reference honnete et ne demandent aucun ajustement sur les donnees - donc
+aucun risque de surapprentissage, et rien a re-entrainer.
+
+    residu = observe - attendu
+
+Un residu positif au role de favorite = l'equipe deçoit plus que sa cote ne le
+laissait prevoir. Positif au role d'outsider = elle cree la surprise plus
+souvent qu'annonce.
+
+SIGNIFICATIVITE
+---------------
+Chaque match est un tirage de Bernoulli de probabilite propre. La somme suit
+une loi de Poisson-binomiale, de variance sum p_i(1-p_i). Le z-score compare
+donc le residu a cet ecart-type, ce qui tient compte du fait qu'un match a
+50/50 est bien plus bruite qu'un match a 90/10.
+
+Les z sont centres sur le biais global de l'echantillon : on classe les
+equipes les unes par rapport aux autres, pas par rapport a la calibration
+absolue de statarea, qui est mesuree separement.
+
+LE TEST QUI COMPTE VRAIMENT
+---------------------------
+Si l'hypothese de depart est fausse - si aucune equipe n'a de propension
+propre a la surprise - les z se distribuent comme une normale centree reduite,
+d'ecart-type 1. Une surdispersion nette (ecart-type > 1) est la signature d'un
+signal reel. `overdispersion()` mesure exactement ca : c'est le seul resultat
+a regarder avant de croire au moindre classement.
+"""
+
+from __future__ import annotations
+
+import math
+import sqlite3
+from dataclasses import dataclass
+from typing import Literal, Optional
+
+Role = Literal["favorite", "underdog"]
+
+# En dessous, un classement n'a aucun sens : le bruit domine.
+MIN_MATCHES = 5
+
+# Seuil en dessous duquel le test de surdispersion lui-meme n'est pas fiable :
+# l'approximation normale de la loi de Poisson-binomiale demande quelques
+# tirages par equipe pour tenir.
+RELIABLE_MIN = 5
+
+
+@dataclass
+class TeamResidual:
+    team: str
+    role: Role
+    n: int
+    observed: int
+    expected: float
+    variance: float
+    offset: float          # biais de reference retire, par match (hors cette equipe)
+
+    @property
+    def residual(self) -> float:
+        """Ecart a l'attendu, corrige du biais de reference."""
+        return self.observed - self.expected - self.offset * self.n
+
+    @property
+    def per_match(self) -> float:
+        """Residu moyen par match, en points de pourcentage."""
+        return self.residual / self.n * 100 if self.n else 0.0
+
+    @property
+    def z(self) -> Optional[float]:
+        """Ecarts-types entre l'observe et l'attendu."""
+        return self.residual / math.sqrt(self.variance) if self.variance > 0 else None
+
+    @property
+    def significant(self) -> bool:
+        """|z| > 2 : environ 5 % de faux positifs, AVANT correction multiple."""
+        z = self.z
+        return z is not None and abs(z) > 2
+
+
+# p_favori et p_outsider selon le camp designe favori, normalises.
+_EXPR = {
+    "favorite": """
+        SELECT home AS team,
+               1.0 - CAST(p1 AS REAL) / (p1 + px + p2) AS p,
+               surprise AS hit
+        FROM matches WHERE favorite = 'home' AND surprise IS NOT NULL {extra}
+        UNION ALL
+        SELECT away, 1.0 - CAST(p2 AS REAL) / (p1 + px + p2), surprise
+        FROM matches WHERE favorite = 'away' AND surprise IS NOT NULL {extra}
+    """,
+    "underdog": """
+        SELECT away AS team,
+               CAST(p2 AS REAL) / (p1 + px + p2) AS p,
+               upset AS hit
+        FROM matches WHERE favorite = 'home' AND upset IS NOT NULL {extra}
+        UNION ALL
+        SELECT home, CAST(p1 AS REAL) / (p1 + px + p2), upset
+        FROM matches WHERE favorite = 'away' AND upset IS NOT NULL {extra}
+    """,
+}
+
+
+def _rows(conn: sqlite3.Connection, role: Role,
+          since: Optional[str] = None, until: Optional[str] = None):
+    clauses, params = [], []
+    if since:
+        clauses.append("match_date >= ?")
+        params.append(since)
+    if until:
+        clauses.append("match_date <= ?")
+        params.append(until)
+    extra = ("AND " + " AND ".join(clauses)) if clauses else ""
+    return conn.execute(_EXPR[role].format(extra=extra), params * 2).fetchall()
+
+
+def calibration_offset(conn: sqlite3.Connection, role: Role = "favorite",
+                       since: Optional[str] = None, until: Optional[str] = None) -> tuple[float, int]:
+    """Biais global de statarea sur l'echantillon : (observe - attendu) par match."""
+    rows = _rows(conn, role, since, until)
+    if not rows:
+        return 0.0, 0
+    return sum(r["hit"] - r["p"] for r in rows) / len(rows), len(rows)
+
+
+def team_residuals(conn: sqlite3.Connection, role: Role = "favorite",
+                   min_matches: int = MIN_MATCHES,
+                   since: Optional[str] = None,
+                   until: Optional[str] = None) -> list[TeamResidual]:
+    rows = _rows(conn, role, since, until)
+
+    agg: dict[str, dict[str, float]] = {}
+    for r in rows:
+        a = agg.setdefault(r["team"], {"n": 0, "observed": 0, "expected": 0.0, "variance": 0.0})
+        a["n"] += 1
+        a["observed"] += r["hit"]
+        a["expected"] += r["p"]
+        a["variance"] += r["p"] * (1 - r["p"])
+
+    total_n = sum(a["n"] for a in agg.values())
+    total_obs = sum(a["observed"] for a in agg.values())
+    total_exp = sum(a["expected"] for a in agg.values())
+
+    out = []
+    for team, a in agg.items():
+        if a["n"] < min_matches:
+            continue
+        # Biais de reference calcule SANS cette equipe : sinon une equipe qui
+        # pese lourd dans l'echantillon annule une partie de son propre signal.
+        rest_n = total_n - a["n"]
+        offset = ((total_obs - a["observed"]) - (total_exp - a["expected"])) / rest_n if rest_n else 0.0
+        out.append(TeamResidual(team=team, role=role, n=int(a["n"]),
+                                observed=int(a["observed"]), expected=a["expected"],
+                                variance=a["variance"], offset=offset))
+    return sorted(out, key=lambda t: -(t.z or 0))
+
+
+def overdispersion(conn: sqlite3.Connection, role: Role = "favorite",
+                   min_matches: int = MIN_MATCHES,
+                   since: Optional[str] = None,
+                   until: Optional[str] = None) -> dict:
+    """Le seul test qui dise si l'hypothese tient.
+
+    Sous l'hypothese nulle - aucune equipe n'a de propension propre - les z se
+    distribuent en normale centree reduite. sd nettement > 1 = signal reel.
+    """
+    teams = team_residuals(conn, role, min_matches, since, until)
+    zs = [t.z for t in teams if t.z is not None]
+    if len(zs) < 2:
+        return {"teams": len(zs), "sd": None, "mean": None, "reliable": False,
+                "significant": 0, "verdict": "echantillon insuffisant"}
+
+    mean = sum(zs) / len(zs)
+    sd = math.sqrt(sum((z - mean) ** 2 for z in zs) / (len(zs) - 1))
+    # Erreur type de l'ecart-type d'un echantillon normal.
+    se = 1 / math.sqrt(2 * (len(zs) - 1))
+
+    # En dessous de ~5 matchs, l'approximation normale du z est mauvaise et
+    # gonfle mecaniquement la dispersion : le test ne veut alors rien dire.
+    if min_matches < RELIABLE_MIN:
+        verdict = (f"non interpretable : a moins de {RELIABLE_MIN} matchs par equipe, "
+                   "l'approximation normale gonfle la dispersion")
+        return {"teams": len(zs), "sd": sd, "mean": mean, "se": se,
+                "expected_sd": 1.0, "verdict": verdict, "reliable": False,
+                "significant": sum(1 for t in teams if t.significant)}
+
+    if sd > 1 + 2 * se:
+        verdict = "surdispersion : un signal par equipe est plausible"
+    elif sd < 1 - 2 * se:
+        verdict = "sous-dispersion (inattendu, verifier les donnees)"
+    else:
+        verdict = "compatible avec le hasard : aucun signal par equipe detectable"
+    return {"teams": len(zs), "sd": sd, "mean": mean, "se": se,
+            "expected_sd": 1.0, "verdict": verdict, "reliable": True,
+            "significant": sum(1 for t in teams if t.significant)}

@@ -95,5 +95,6 @@ jobs:
           {
             echo '```'
             python -m statarea report --min-fav 5 --min-dog 5
+            python -m statarea residual --min 5
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
