@@ -73,21 +73,21 @@ class TestArchive(unittest.TestCase):
         return {"sa_id": sa_id, "fetched_at": stamp, "odds": {"o1": o1, "ox": 3.0, "o2": 3.5}}
 
     def test_append_and_read(self):
-        n = odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
-        self.assertEqual(n, 1)
+        fresh = odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
+        self.assertEqual(len(fresh), 1)
         self.assertEqual(len(odds.read_day("2026-09-23", self.dir)), 1)
 
     def test_unchanged_odds_are_not_rewritten(self):
         odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
-        n = odds.append_day("2026-09-23", [self._rec("1", "T2", 2.1)], self.dir)
-        self.assertEqual(n, 0)
+        fresh = odds.append_day("2026-09-23", [self._rec("1", "T2", 2.1)], self.dir)
+        self.assertEqual(fresh, [])
         self.assertEqual(len(odds.read_day("2026-09-23", self.dir)), 1)
 
     def test_a_moved_odd_is_kept_as_a_new_record(self):
         """Le mouvement des cotes est une information : on garde les deux."""
         odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
-        n = odds.append_day("2026-09-23", [self._rec("1", "T2", 1.9)], self.dir)
-        self.assertEqual(n, 1)
+        fresh = odds.append_day("2026-09-23", [self._rec("1", "T2", 1.9)], self.dir)
+        self.assertEqual(len(fresh), 1)
         records = odds.read_day("2026-09-23", self.dir)
         self.assertEqual([r["odds"]["o1"] for r in records], [2.1, 1.9])
 
@@ -100,6 +100,43 @@ class TestArchive(unittest.TestCase):
         odds.append_day("2026-09-23", [self._rec("1", "T1", 2.1)], self.dir)
         odds.append_day("2026-09-24", [self._rec("2", "T1", 2.1)], self.dir)
         self.assertEqual(odds.archived_days(self.dir), ["2026-09-23", "2026-09-24"])
+
+
+class TestRebuild(unittest.TestCase):
+    """La base doit etre une fonction exacte des archives.
+
+    Le job GitHub et le build du site repartent d'une base vide : si une
+    reconstruction perdait les cotes, les cotes d'avant-match des matchs joues
+    depuis ne seraient jamais disponibles, et la rentabilite jamais mesurable.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _rec(self, stamp, o1):
+        return {"sa_id": "42", "fetched_at": stamp, "odds": {"o1": o1, "ox": 3.0, "o2": 3.5}}
+
+    def _dump(self, conn):
+        return conn.execute("SELECT match_id, fetched_at, o1 FROM odds ORDER BY fetched_at").fetchall()
+
+    def test_rebuilt_database_equals_live_database(self):
+        live = db.connect(":memory:")
+        # Trois passages : le deuxieme n'apporte rien de neuf.
+        for stamp, o1 in (("T1", 2.1), ("T2", 2.1), ("T3", 1.9)):
+            fresh = odds.append_day("2026-09-23", [self._rec(stamp, o1)], self.dir)
+            db.upsert_odds(live, fresh)
+
+        rebuilt = db.connect(":memory:")
+        for _day, records in odds.iter_archive(self.dir):
+            db.upsert_odds(rebuilt, records)
+
+        self.assertEqual([tuple(r) for r in self._dump(live)],
+                         [tuple(r) for r in self._dump(rebuilt)])
+        self.assertEqual(len(self._dump(rebuilt)), 2)   # T2 inchange, non archive
 
 
 class TestStore(unittest.TestCase):

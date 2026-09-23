@@ -115,10 +115,14 @@ def read_day(day: str, odds_dir: Path | str = ODDS_DIR) -> list[dict]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
-def append_day(day: str, records: list[dict], odds_dir: Path | str = ODDS_DIR) -> int:
-    """Ajoute des releves, en ignorant ceux identiques au dernier connu."""
+def append_day(day: str, records: list[dict], odds_dir: Path | str = ODDS_DIR) -> list[dict]:
+    """Ajoute des releves, en ignorant ceux identiques au dernier connu.
+
+    Retourne les releves reellement archives : ce sont les seuls a enregistrer
+    en base, pour que la base reste une fonction exacte des archives.
+    """
     if not records:
-        return 0
+        return []
     existing = read_day(day, odds_dir)
     last: dict[str, dict] = {}
     for rec in existing:
@@ -131,14 +135,14 @@ def append_day(day: str, records: list[dict], odds_dir: Path | str = ODDS_DIR) -
             continue
         fresh.append(rec)
     if not fresh:
-        return 0
+        return []
 
     path = odds_path(day, odds_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = existing + fresh
     payload = "\n".join(json.dumps(r, sort_keys=True, ensure_ascii=False) for r in lines) + "\n"
     path.write_bytes(gzip.compress(payload.encode("utf-8"), compresslevel=9))
-    return len(fresh)
+    return fresh
 
 
 def archived_days(odds_dir: Path | str = ODDS_DIR) -> list[str]:
@@ -213,10 +217,15 @@ def collect(conn, session=None, today: Optional[str] = None, ahead: int = 3,
         if delay and i < len(rows) - 1:
             time.sleep(delay)
 
-    written = sum(append_day(day, recs, odds_dir) for day, recs in by_day.items())
-    stored = 0
+    from . import db as _db
+
+    written = stored = 0
     for day, recs in by_day.items():
-        stored += __import__("statarea.db", fromlist=["db"]).upsert_odds(conn, recs)
+        fresh = append_day(day, recs, odds_dir)
+        written += len(fresh)
+        # Uniquement ce qui a ete archive : une base reconstruite depuis les
+        # archives doit etre identique a la base vivante.
+        stored += _db.upsert_odds(conn, fresh)
 
     return {"matchs": len(rows), "cotes": fetched, "sans_cote": empty,
             "echecs": failed, "archives": written, "enregistres": stored}

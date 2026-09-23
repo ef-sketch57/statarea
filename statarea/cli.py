@@ -172,6 +172,14 @@ def cmd_reparse(args) -> int:
         total_upd += upd
         print(f"  {day}  {len(matches):4} matchs  +{new} nouveaux, {upd} completes")
     print(f"\nRe-parse termine : +{total_new} nouveaux, {total_upd} completes.")
+
+    # Les cotes aussi : sans elles, une base reconstruite (job GitHub, build du
+    # site) ne connait que les cotes du passage en cours, jamais les cotes
+    # d'avant-match des matchs joues depuis.
+    loaded = 0
+    for day, records in odds.iter_archive():
+        loaded += db.upsert_odds(conn, records)
+    print(f"Cotes rechargees depuis data/odds/ : {loaded} releve(s).")
     return 0
 
 

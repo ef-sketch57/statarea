@@ -52,6 +52,13 @@ jobs:
       - name: Tests
         run: python -m unittest discover -s tests
 
+      - name: Reconstruction de la base depuis les archives
+        # Le runner repart d'une base vide. Sans cette etape, le rapport ne
+        # connaitrait que la fenetre de 7 jours et les cotes du passage en
+        # cours : un match joue hier n'aurait jamais sa cote d'avant-match, et
+        # le tableau de rentabilite resterait vide a perpetuite.
+        run: python -m statarea reparse
+
       - name: Collecte de la fenetre disponible
         run: python -m statarea scrape --window 3 --delay "${{ inputs.delay || '5' }}"
 
