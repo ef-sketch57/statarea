@@ -102,6 +102,57 @@ Deux conditions pour qu'il tourne :
 À noter : GitHub désactive automatiquement les workflows planifiés d'un dépôt sans activité
 pendant 60 jours. Les commits quotidiens du job suffisent à l'éviter.
 
+### Déclencheur externe (cron-job.org)
+
+**La planification GitHub ne s'est jamais déclenchée** : aucune exécution planifiée en
+deux jours, sur quatre créneaux, alors que le workflow était bien sur la branche par
+défaut. La cause la plus probable est le renommage de la branche par défaut, qui fait
+parfois perdre l'enregistrement des planifications. On ne compte donc plus dessus : un
+service externe, [cron-job.org](https://cron-job.org), appelle l'API GitHub trois fois
+par jour. La planification GitHub reste en place comme secours.
+
+**1. Jeton GitHub** — *Settings → Developer settings → Personal access tokens →
+Fine-grained tokens → Generate new token*
+
+- *Repository access* : **Only select repositories** → `ef-sketch57/statarea`
+- *Repository permissions* : **Actions → Read and write** (rien d'autre)
+- *Expiration* : la plus longue possible, et **notez la date** : à l'expiration la
+  collecte s'arrête sans rien casser de visible.
+
+**2. Tester le jeton** avant de le confier à cron-job.org :
+
+```bash
+curl -i -X POST \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer VOTRE_JETON" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/ef-sketch57/statarea/actions/workflows/collecte-quotidienne.yml/dispatches \
+  -d '{"ref":"main"}'
+```
+
+Réponse attendue : `HTTP/2 204`, et une exécution « Collecte quotidienne » apparaît dans
+l'onglet *Actions*. Un `401` signale un jeton invalide, un `403` une permission manquante,
+un `404` un dépôt non sélectionné dans le jeton.
+
+**3. Job cron-job.org** — *Create cronjob*
+
+| champ | valeur |
+|---|---|
+| URL | `https://api.github.com/repos/ef-sketch57/statarea/actions/workflows/collecte-quotidienne.yml/dispatches` |
+| Planification | personnalisée, heures **5, 13, 21**, minute **25**, fuseau **UTC** |
+| *Advanced → Request method* | `POST` |
+| *Advanced → Headers* | `Accept: application/vnd.github+json`<br>`Authorization: Bearer VOTRE_JETON`<br>`X-GitHub-Api-Version: 2022-11-28`<br>`Content-Type: application/json` |
+| *Advanced → Request body* | `{"ref":"main"}` |
+| *Notifications* | **activer l'alerte en cas d'échec** |
+
+L'alerte d'échec est le point important : c'est elle qui transforme une panne silencieuse
+(jeton expiré, dépôt renommé) en e-mail.
+
+**Consommation.** Une collecte dure environ 7 minutes, dont 5 pour les cotes. Trois par
+jour font ~630 minutes par mois, sous le quota gratuit de 2 000 minutes des dépôts privés.
+Si la planification GitHub se remettait à fonctionner en plus, les deux sources
+doubleraient la consommation : il faudrait alors retirer le bloc `schedule:` du workflow.
+
 Pour une machine qui tourne en permanence, l'équivalent en cron :
 
 ```cron
