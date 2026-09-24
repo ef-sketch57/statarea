@@ -228,7 +228,8 @@ def build_value_report(conn: sqlite3.Connection, since: Optional[str] = None,
 
     lines.append(f"  {'strategie':46} {'n':>5} {'reussis':>8} {'rendement':>11} {'t':>7}")
     lines.append("  " + "-" * 82)
-    for key in ("statarea_simple", "statarea_double", "favori", "domicile"):
+    for key in ("statarea_simple", "statarea_double", "corrige", "corrige_hors_echantillon",
+                "favori", "domicile"):
         r = results[key]
         if not r.n:
             continue
@@ -249,6 +250,10 @@ def build_value_report(conn: sqlite3.Connection, since: Optional[str] = None,
         lines.append(f"  Ecart au temoin 'toujours le favori' : {delta:+.1f} points.")
         lines.append("  Une strategie qui ne bat pas ce temoin n'apporte aucune information.")
         lines.append("")
+    lines.append("  Le pronostic corrige est une hypothese PRE-ENREGISTREE le 24/09 : seule la")
+    lines.append("  ligne 'dont matchs joues depuis le 24/09' la teste. La ligne complete inclut")
+    lines.append("  les matchs qui ont servi a la formuler, elle n'a pas valeur de preuve.")
+    lines.append("")
     return "\n".join(lines)
 
 

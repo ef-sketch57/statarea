@@ -44,6 +44,33 @@ from . import db
 SINGLES = {"1", "X", "2"}
 DOUBLES = {"1X", "X2", "12"}
 
+# Hypothese PRE-ENREGISTREE le 2026-09-24, avant d'avoir vu les matchs qui la
+# testeront. Constat exploratoire sur 501 pronostics simples joues : quand le
+# pronostic contredit les pourcentages de statarea lui-meme, il est juste dans
+# 23,9 % des cas (46 matchs), contre 53,8 % quand il les suit (448 matchs).
+# Regle : remplacer un pronostic simple qui contredit ses propres pourcentages
+# par l'issue la plus probable selon ces pourcentages. Seuls les matchs joues a
+# partir de cette date comptent pour la valider.
+PREREGISTERED_SINCE = "2026-09-24"
+
+
+def argmax_selection(p1, px, p2) -> Optional[str]:
+    """L'issue au pourcentage strictement le plus haut, ou None en cas d'egalite."""
+    values = {"1": p1, "X": px, "2": p2}
+    if None in values.values():
+        return None
+    top = max(values.values())
+    best = [k for k, v in values.items() if v == top]
+    return best[0] if len(best) == 1 else None
+
+
+def corrected_prediction(prediction, p1, px, p2) -> Optional[str]:
+    """Le pronostic, sauf s'il contredit les pourcentages : on suit alors ceux-ci."""
+    if prediction not in SINGLES:
+        return None
+    best = argmax_selection(p1, px, p2)
+    return best if best and best != prediction else prediction
+
 
 def double_chance_odds(odds: dict[str, float], prediction: str) -> Optional[float]:
     """Cote reconstituee d'une double chance, depuis les cotes 1 X 2."""
@@ -124,13 +151,15 @@ def evaluate(conn: sqlite3.Connection, since: Optional[str] = None,
         params.append(until)
 
     matches = conn.execute(
-        f"""SELECT match_id, prediction, outcome, favorite
+        f"""SELECT match_id, match_date, prediction, outcome, favorite, p1, px, p2
             FROM matches WHERE {" AND ".join(clauses)}""", params).fetchall()
     book = db.closing_odds(conn)
 
     out = {
         "statarea_simple": Result("pronostic statarea (paris simples)"),
         "statarea_double": Result("pronostic statarea (doubles chances, cote reconstituee)"),
+        "corrige": Result("pronostic corrige (pre-enregistre le 24/09)"),
+        "corrige_hors_echantillon": Result("  dont matchs joues depuis le 24/09"),
         "favori": Result("temoin : toujours le favori"),
         "domicile": Result("temoin : toujours le domicile"),
     }
@@ -152,6 +181,14 @@ def evaluate(conn: sqlite3.Connection, since: Optional[str] = None,
             cote = odds_for(odds, pred)
             if cote:
                 out["statarea_double"].returns.append(cote - 1 if wins(pred, outcome) else -1.0)
+
+        sel = corrected_prediction(pred, m["p1"], m["px"], m["p2"])
+        cote = odds_for(odds, sel) if sel else None
+        if cote:
+            ret = cote - 1 if wins(sel, outcome) else -1.0
+            out["corrige"].returns.append(ret)
+            if m["match_date"] >= PREREGISTERED_SINCE:
+                out["corrige_hors_echantillon"].returns.append(ret)
 
         if m["favorite"]:
             sel = "1" if m["favorite"] == "home" else "2"

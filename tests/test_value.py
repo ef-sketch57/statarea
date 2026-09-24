@@ -139,3 +139,18 @@ class TestEvaluate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCorrected(unittest.TestCase):
+    def test_aligned_tip_is_kept(self):
+        self.assertEqual(value.corrected_prediction("1", 55, 25, 20), "1")
+
+    def test_contrary_tip_follows_percentages(self):
+        self.assertEqual(value.corrected_prediction("X", 45, 30, 25), "1")
+        self.assertEqual(value.corrected_prediction("2", 40, 28, 32), "1")
+
+    def test_tie_at_top_keeps_the_tip(self):
+        self.assertEqual(value.corrected_prediction("2", 40, 20, 40), "2")
+
+    def test_doubles_are_not_corrected(self):
+        self.assertIsNone(value.corrected_prediction("1X", 45, 30, 25))

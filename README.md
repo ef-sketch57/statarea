@@ -104,12 +104,17 @@ pendant 60 jours. Les commits quotidiens du job suffisent à l'éviter.
 
 ### Déclencheur externe (cron-job.org)
 
-**La planification GitHub ne s'est jamais déclenchée** : aucune exécution planifiée en
-deux jours, sur quatre créneaux, alors que le workflow était bien sur la branche par
-défaut. La cause la plus probable est le renommage de la branche par défaut, qui fait
-parfois perdre l'enregistrement des planifications. On ne compte donc plus dessus : un
-service externe, [cron-job.org](https://cron-job.org), appelle l'API GitHub trois fois
-par jour. La planification GitHub reste en place comme secours.
+**La planification GitHub fonctionne, mais avec des retards de plusieurs heures.**
+Mesuré sur les premières exécutions planifiées : le créneau de 13:25 s'est déclenché à
+17:52 (4 h 27 de retard), celui de 21:25 à 23:49 (2 h 24). GitHub ne garantit pas
+l'heure d'exécution des tâches planifiées, et les dépôts peu actifs sont servis en
+dernier.
+
+Pour la collecte des matchs, ce retard est sans conséquence : la fenêtre de 3 jours
+l'absorbe. Pour les cotes, il compte : un passage prévu à 13:25 qui part à 17:52 laisse
+passer sans cote d'avant-match les matchs qui commencent entre les deux. Un déclencheur
+externe comme [cron-job.org](https://cron-job.org), qui appelle l'API GitHub à l'heure
+dite, supprime ce trou.
 
 **1. Jeton GitHub** — *Settings → Developer settings → Personal access tokens →
 Fine-grained tokens → Generate new token*
@@ -150,8 +155,8 @@ L'alerte d'échec est le point important : c'est elle qui transforme une panne s
 
 **Consommation.** Une collecte dure environ 7 minutes, dont 5 pour les cotes. Trois par
 jour font ~630 minutes par mois, sous le quota gratuit de 2 000 minutes des dépôts privés.
-Si la planification GitHub se remettait à fonctionner en plus, les deux sources
-doubleraient la consommation : il faudrait alors retirer le bloc `schedule:` du workflow.
+Si cron-job.org est mis en place, retirer le bloc `schedule:` du workflow : sinon les
+deux sources déclenchent chacune trois collectes par jour, et la consommation double.
 
 Pour une machine qui tourne en permanence, l'équivalent en cron :
 
@@ -394,6 +399,20 @@ des paris simples, qui eux sont exacts.
 de parier systematiquement le favori et systematiquement le domicile. Une strategie qui
 ne bat pas ces temoins n'apporte rien. Avec une marge mediane mesuree a **10,2 %**, le
 rendement de reference d'un parieur sans information est d'environ -10 %.
+
+## Hypothèses pré-enregistrées
+
+Une règle trouvée en regardant les données s'ajuste toujours à ces données. Elle ne vaut
+quelque chose que testée sur des matchs joués **après** sa formulation. La date du commit
+qui l'introduit en fait foi.
+
+**H1 — 24/09/2026 — le pronostic qui contredit ses propres pourcentages.** Constat
+exploratoire sur 501 pronostics simples joués : quand statarea pronostique contre son
+propre pourcentage le plus haut (le plus souvent un `X` alors que le `1` est en tête), il
+est juste dans **23,9 %** des cas (46 matchs), contre **53,8 %** quand il le suit
+(448 matchs). Règle : remplacer un tel pronostic par l'issue la plus probable selon les
+pourcentages. Test : la ligne « dont matchs joués depuis le 24/09 » de
+`python -m statarea value`, uniquement.
 
 ## Le site
 
