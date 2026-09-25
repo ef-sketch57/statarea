@@ -207,3 +207,19 @@ class TestDivergence(unittest.TestCase):
         self._load([(25, 25)] * 6)
         self.conn.execute("UPDATE odds SET fetched_at = '2026-09-20T23:00:00Z'")
         self.assertEqual(odds.probability_pairs(self.conn), [])
+
+
+class TestPending(unittest.TestCase):
+    def test_started_matches_are_not_queried(self):
+        from datetime import datetime, timezone
+        from statarea.parser import Match
+        conn = db.connect(":memory:")
+        mk = lambda i, ko: Match(
+            match_id=str(i), sa_id=str(i), match_date="2026-09-25", kickoff=ko,
+            country="T", competition="L", home=f"H{i}", away=f"A{i}", prediction="1",
+            p1=50, px=25, p2=25, home_score=None, away_score=None, outcome=None,
+            favorite=None, fav_margin=None, surprise=None, upset=None, prediction_hit=None)
+        db.upsert_matches(conn, [mk(1, "10:00"), mk(2, "18:00")])
+        now = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
+        ids = [r["match_id"] for r in odds.pending_matches(conn, "2026-09-25", now=now)]
+        self.assertEqual(ids, ["2"])   # le match de 10:00 a commence

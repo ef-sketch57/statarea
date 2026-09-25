@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, asdict
+from datetime import datetime, timedelta
 from typing import Optional
 
 from bs4 import BeautifulSoup
@@ -86,6 +87,32 @@ def page_date(soup: BeautifulSoup) -> Optional[str]:
     node = soup.find(id="cdate")
     text = _text(node)
     return text if text and re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) else None
+
+
+def page_offset(soup: BeautifulSoup) -> Optional[timedelta]:
+    """Decalage horaire dans lequel la page affiche ses heures.
+
+    statarea deduit le fuseau de l'adresse IP du visiteur et l'annonce dans
+    <div class='gmt'>GMT -4</div>. Le verrouillage en GMT 0 par la session de
+    collecte peut echouer sans bruit - c'est arrive lors d'une execution du job,
+    servie en GMT -5 - et les archives anciennes melangent cinq fuseaux. Lire le
+    fuseau declare par la page elle-meme est la seule source fiable.
+    """
+    node = soup.find("div", class_="gmt")
+    m = re.search(r"GMT\s*([+-]?)\s*(\d{1,2})(?::(\d{2}))?", _text(node) or "")
+    if not m:
+        return None
+    sign = -1 if m.group(1) == "-" else 1
+    return sign * timedelta(hours=int(m.group(2)), minutes=int(m.group(3) or 0))
+
+
+def to_utc(match_date: str, kickoff: str, offset: Optional[timedelta]) -> tuple[str, str]:
+    """Convertit une date et une heure locales de la page en UTC."""
+    if not offset:
+        return match_date, kickoff
+    local = datetime.strptime(f"{match_date} {kickoff}", "%Y-%m-%d %H:%M")
+    utc = local - offset
+    return utc.strftime("%Y-%m-%d"), utc.strftime("%H:%M")
 
 
 def _split_country_competition(header) -> tuple[Optional[str], Optional[str]]:
@@ -225,6 +252,7 @@ def parse_page(html: str, expected_date: Optional[str] = None) -> list[Match]:
             "(date hors de la fenetre disponible)"
         )
     default_date = served or expected_date
+    offset = page_offset(soup)
 
     matches: list[Match] = []
     for comp in soup.select("div.competition"):
@@ -250,6 +278,9 @@ def parse_page(html: str, expected_date: Optional[str] = None) -> list[Match]:
             kickoff = m.group(2) if m else _text(node.find("div", class_="date"))
             if not match_date:
                 continue
+            # Toujours en UTC, quel que soit le fuseau dans lequel la page a ete servie.
+            if kickoff and re.fullmatch(r"\d{2}:\d{2}", kickoff):
+                match_date, kickoff = to_utc(match_date, kickoff, offset)
 
             tip = node.find("div", class_="tip")
             prediction = _text(tip.find("div", class_="value")) if tip else None

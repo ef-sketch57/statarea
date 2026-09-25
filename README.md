@@ -292,8 +292,15 @@ Mesure sur nos propres archives avant correction : quatre fuseaux distincts selo
 machine (GMT-4, GMT-7, GMT 0, GMT+1), et **5,9 % des matchs enregistres sous deux dates**,
 donc comptes deux fois dans toutes les statistiques.
 
-Deux corrections :
+Trois corrections :
 
+0. **Le parser convertit chaque horaire en UTC**, à partir du fuseau que la page déclare
+   elle-même (`<div class='gmt'>GMT -4</div>`). C'est la protection principale : elle ne
+   dépend pas du verrouillage ci-dessous, et elle a corrigé rétroactivement toutes les
+   archives. Sur 105 instantanés, 41 n'étaient pas en GMT 0 ; à la reconstruction, l'heure
+   de 999 matchs sur 1 095 a été corrigée, dont 60 changements de date. Vérifié sur un cas
+   connu de façon indépendante : Santa Fe - Deportivo Cali, enregistré à 21:00 le 22
+   (heure de New York), est bien à 01:00 UTC le 23, soit les 03:00 affichées à Paris.
 1. La session de collecte fige le fuseau en **GMT 0** (`setCustomTimezone`, garde par le
    cookie `statareacustomtimezone`).
 2. La cle d'un match est desormais **`sa_id`**, l'identifiant interne de statarea, seul

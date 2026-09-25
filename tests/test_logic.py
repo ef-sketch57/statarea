@@ -209,3 +209,48 @@ class TestUpsert(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTimezone(unittest.TestCase):
+    """Chaque page annonce son fuseau ; les heures doivent ressortir en UTC."""
+
+    def _page(self, gmt, stamp="2026-09-22 21:00"):
+        return f"""
+        <div id='cdate'>2026-09-22</div><div class='gmt'>{gmt}</div>
+        <div class='competition'><div class='header'><div class='name'>X - Y</div></div>
+          <div class='match' id='77'>
+            <div class='teams'><div class='ownheader'>{stamp}</div>
+              <div class='hostteam'><div class='goals'>-</div><div class='name'>A</div></div>
+              <div class='guestteam'><div class='goals'>-</div><div class='name'>B</div></div>
+            </div>
+          </div>
+        </div>"""
+
+    def _parse(self, gmt, stamp="2026-09-22 21:00"):
+        from statarea.parser import parse_page
+        m = parse_page(self._page(gmt, stamp))[0]
+        return m.match_date, m.kickoff
+
+    def test_gmt_zero_is_unchanged(self):
+        self.assertEqual(self._parse("GMT 0"), ("2026-09-22", "21:00"))
+
+    def test_negative_offset_can_move_to_the_next_day(self):
+        """21:00 a New York (GMT -4) = 01:00 UTC le lendemain."""
+        self.assertEqual(self._parse("GMT -4"), ("2026-09-23", "01:00"))
+
+    def test_positive_offset_can_move_to_the_previous_day(self):
+        self.assertEqual(self._parse("GMT +1", "2026-09-23 00:30"), ("2026-09-22", "23:30"))
+
+    def test_same_match_seen_from_two_timezones_agrees(self):
+        """Le cas qui produisait les doublons : deux fuseaux, un seul instant."""
+        self.assertEqual(self._parse("GMT -7", "2026-09-22 14:00"),
+                         self._parse("GMT +1", "2026-09-22 22:00"))
+
+    def test_half_hour_offset(self):
+        self.assertEqual(self._parse("GMT +5:30", "2026-09-22 21:00"), ("2026-09-22", "15:30"))
+
+    def test_missing_tag_leaves_times_as_is(self):
+        from statarea.parser import parse_page
+        page = self._page("GMT 0").replace("<div class='gmt'>GMT 0</div>", "")
+        m = parse_page(page)[0]
+        self.assertEqual((m.match_date, m.kickoff), ("2026-09-22", "21:00"))

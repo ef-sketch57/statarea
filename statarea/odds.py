@@ -165,22 +165,28 @@ DEFAULT_DELAY = 1.0
 
 
 def pending_matches(conn, today: Optional[str] = None, ahead: int = 3,
-                    behind: int = 1) -> list:
-    """Matchs qui meritent un releve : pas encore joues, dans la fenetre utile.
+                    behind: int = 1, now: Optional[datetime] = None) -> list:
+    """Matchs qui meritent un releve : pas encore COMMENCES, dans la fenetre utile.
 
-    Inutile d'interroger un match deja termine (sa cote ne bougera plus) ni un
-    match trop lointain (statarea n'a souvent pas encore de cotes).
+    Un match deja commence n'a plus d'interet, meme si statarea n'a pas encore
+    publie son score (il lui faut souvent une douzaine d'heures) : une cote
+    relevee apres le coup d'envoi est de toute facon ecartee par la regle
+    d'anteriorite. Les interroger quand meme occupait une bonne part des
+    13 minutes du releve.
     """
     from datetime import date, timedelta
     ref = date.fromisoformat(today) if today else date.today()
+    now = now or datetime.now(timezone.utc)
     return conn.execute(
         """SELECT match_id, sa_id, match_date, kickoff, home, away
            FROM matches
            WHERE sa_id IS NOT NULL AND outcome IS NULL
              AND match_date >= ? AND match_date <= ?
+             AND (kickoff IS NULL OR match_date || 'T' || kickoff > ?)
            ORDER BY match_date, kickoff""",
         ((ref - timedelta(days=behind)).isoformat(),
-         (ref + timedelta(days=ahead)).isoformat()),
+         (ref + timedelta(days=ahead)).isoformat(),
+         now.strftime("%Y-%m-%dT%H:%M")),
     ).fetchall()
 
 

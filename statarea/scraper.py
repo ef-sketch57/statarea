@@ -11,6 +11,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -108,7 +109,12 @@ def make_session() -> requests.Session:
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9",
     })
-    pin_timezone(session)
+    if not pin_timezone(session):
+        # Plus bloquant depuis que le parser convertit lui-meme en UTC, mais
+        # a signaler : c'est ce qui s'est produit, sans bruit, lors d'une
+        # execution du job servie en GMT -5.
+        print("ATTENTION : fuseau GMT 0 non applique, statarea servira les heures "
+              "dans le fuseau de l'IP (converties en UTC au parsing).", file=sys.stderr)
     return session
 
 
