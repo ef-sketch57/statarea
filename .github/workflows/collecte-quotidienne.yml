@@ -6,23 +6,14 @@ name: Collecte quotidienne
 # joues et les matchs qui n'etaient pas encore publies la veille.
 on:
   schedule:
-    # Trois creneaux par jour plutot qu'un seul, pour deux raisons.
-    #
-    # 1. Les crons GitHub Actions se declenchent avec un retard variable, et
-    #    peuvent sauter un creneau sans rien signaler. Un jour manque est
-    #    definitivement perdu : la fenetre de statarea ne remonte pas au-dela
-    #    de 3 jours. Trois creneaux rendent une journee blanche tres improbable.
-    # 2. Les matchs se terminent a des heures tres differentes selon les
-    #    continents, et statarea ajoute des matchs a ses pages passees en
-    #    continu. Repasser dans la journee ramene donc reellement plus de
-    #    donnees, ce n'est pas qu'une securite.
-    #
-    # Le cout est nul : la collecte est idempotente et un instantane identique
-    # au precedent n'est pas reecrit. Minutes volontairement decalees, les
-    # heures rondes etant les plus congestionnees chez GitHub.
-    - cron: "25 5 * * *"
-    - cron: "25 13 * * *"
-    - cron: "25 21 * * *"
+    # Toutes les 3 heures. statarea ajoute une partie des matchs quelques
+    # heures seulement avant leur coup d'envoi : avec trois passages par jour
+    # (7 h d'ecart en mediane, jusqu'a 12 h avec les retards de GitHub), un
+    # quart des matchs joues n'avaient jamais ete vus avant le coup d'envoi,
+    # donc jamais cotes. Minute decalee : les heures rondes sont les plus
+    # congestionnees chez GitHub. Le groupe de concurrence empeche deux
+    # collectes simultanees si des creneaux retardes se chevauchent.
+    - cron: "25 */3 * * *"
   workflow_dispatch:
     inputs:
       delay:

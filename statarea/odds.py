@@ -165,8 +165,15 @@ DEFAULT_DELAY = 1.0
 
 
 def pending_matches(conn, today: Optional[str] = None, ahead: int = 3,
-                    behind: int = 1, now: Optional[datetime] = None) -> list:
+                    behind: int = 1, now: Optional[datetime] = None,
+                    refresh_hours: Optional[int] = 12) -> list:
     """Matchs qui meritent un releve : pas encore COMMENCES, dans la fenetre utile.
+
+    Parmi les matchs a venir, seuls sont interroges ceux qui n'ont encore aucune
+    cote, et ceux qui commencent dans les `refresh_hours` heures : c'est pres
+    du coup d'envoi que la cote de cloture se forme. Un match a trois jours,
+    deja cote, n'a pas besoin d'etre re-interroge toutes les trois heures.
+    refresh_hours=None desactive ce filtre.
 
     Un match deja commence n'a plus d'interet, meme si statarea n'a pas encore
     publie son score (il lui faut souvent une douzaine d'heures) : une cote
@@ -177,16 +184,20 @@ def pending_matches(conn, today: Optional[str] = None, ahead: int = 3,
     from datetime import date, timedelta
     ref = date.fromisoformat(today) if today else date.today()
     now = now or datetime.now(timezone.utc)
+    horizon = (now + timedelta(hours=refresh_hours or 0)).strftime("%Y-%m-%dT%H:%M")
+    refresh = "" if refresh_hours is None else """
+             AND (NOT EXISTS (SELECT 1 FROM odds o WHERE o.match_id = matches.match_id)
+                  OR kickoff IS NULL OR match_date || 'T' || kickoff <= :horizon)"""
     return conn.execute(
-        """SELECT match_id, sa_id, match_date, kickoff, home, away
+        f"""SELECT match_id, sa_id, match_date, kickoff, home, away
            FROM matches
            WHERE sa_id IS NOT NULL AND outcome IS NULL
-             AND match_date >= ? AND match_date <= ?
-             AND (kickoff IS NULL OR match_date || 'T' || kickoff > ?)
+             AND match_date >= :debut AND match_date <= :fin
+             AND (kickoff IS NULL OR match_date || 'T' || kickoff > :now){refresh}
            ORDER BY match_date, kickoff""",
-        ((ref - timedelta(days=behind)).isoformat(),
-         (ref + timedelta(days=ahead)).isoformat(),
-         now.strftime("%Y-%m-%dT%H:%M")),
+        {"debut": (ref - timedelta(days=behind)).isoformat(),
+         "fin": (ref + timedelta(days=ahead)).isoformat(),
+         "now": now.strftime("%Y-%m-%dT%H:%M"), "horizon": horizon},
     ).fetchall()
 
 

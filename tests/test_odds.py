@@ -223,3 +223,29 @@ class TestPending(unittest.TestCase):
         now = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
         ids = [r["match_id"] for r in odds.pending_matches(conn, "2026-09-25", now=now)]
         self.assertEqual(ids, ["2"])   # le match de 10:00 a commence
+
+
+class TestRefresh(unittest.TestCase):
+    """Seuls les matchs jamais cotes, ou proches du coup d'envoi, sont re-interroges."""
+
+    def test_refresh_policy(self):
+        from datetime import datetime, timezone
+        from statarea.parser import Match
+        conn = db.connect(":memory:")
+        mk = lambda i, d, ko: Match(
+            match_id=str(i), sa_id=str(i), match_date=d, kickoff=ko,
+            country="T", competition="L", home=f"H{i}", away=f"A{i}", prediction="1",
+            p1=50, px=25, p2=25, home_score=None, away_score=None, outcome=None,
+            favorite=None, fav_margin=None, surprise=None, upset=None, prediction_hit=None)
+        db.upsert_matches(conn, [
+            mk(1, "2026-09-30", "18:00"),   # deja cote, commence dans 6 h -> oui
+            mk(2, "2026-10-02", "18:00"),   # deja cote, dans 2 jours     -> non
+            mk(3, "2026-10-02", "20:00"),   # jamais cote, dans 2 jours   -> oui
+        ])
+        db.upsert_odds(conn, [{"sa_id": s, "fetched_at": "2026-09-30T06:00:00Z",
+                               "odds": {"o1": 2.0, "ox": 3.0, "o2": 4.0}} for s in ("1", "2")])
+        now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+        ids = [r["match_id"] for r in odds.pending_matches(conn, "2026-09-30", now=now)]
+        self.assertEqual(ids, ["1", "3"])
+        tous = [r["match_id"] for r in odds.pending_matches(conn, "2026-09-30", now=now, refresh_hours=None)]
+        self.assertEqual(tous, ["1", "2", "3"])

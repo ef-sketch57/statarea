@@ -154,3 +154,27 @@ class TestCorrected(unittest.TestCase):
 
     def test_doubles_are_not_corrected(self):
         self.assertIsNone(value.corrected_prediction("1X", 45, 30, 25))
+
+
+class TestContrary(unittest.TestCase):
+    def test_contrary_detection(self):
+        self.assertTrue(value.is_contrary("X", 45, 30, 25))
+        self.assertTrue(value.is_contrary("2", 40, 28, 32))
+        self.assertFalse(value.is_contrary("1", 45, 30, 25))
+        self.assertFalse(value.is_contrary("2", 40, 20, 40))   # egalite au sommet
+        self.assertFalse(value.is_contrary("1X", 45, 30, 25))  # double chance
+
+    def test_h2_only_counts_matches_from_its_start_date(self):
+        conn = db.connect(":memory:")
+        db.upsert_matches(conn, [
+            _match(1, 45, 30, 25, 1, 1, prediction="X", date="2026-09-30"),
+            _match(2, 45, 30, 25, 1, 1, prediction="X", date="2026-10-01"),
+        ])
+        db.upsert_odds(conn, [
+            {"sa_id": "1", "fetched_at": "2026-09-30T10:00:00Z", "odds": {"o1": 2.0, "ox": 3.3, "o2": 4.0}},
+            {"sa_id": "2", "fetched_at": "2026-10-01T10:00:00Z", "odds": {"o1": 2.0, "ox": 3.3, "o2": 4.0}},
+        ])
+        r = value.evaluate(conn)
+        self.assertEqual(r["contraires"].n, 2)
+        self.assertEqual(r["contraires_hors_echantillon"].n, 1)
+        self.assertAlmostEqual(r["contraires_hors_echantillon"].returns[0], 2.3)

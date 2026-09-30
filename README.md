@@ -102,6 +102,25 @@ Deux conditions pour qu'il tourne :
 À noter : GitHub désactive automatiquement les workflows planifiés d'un dépôt sans activité
 pendant 60 jours. Les commits quotidiens du job suffisent à l'éviter.
 
+### Fréquence : toutes les 3 heures
+
+statarea ajoute une partie des matchs quelques heures seulement avant leur coup d'envoi.
+Avec trois passages par jour (7 h d'écart en médiane, jusqu'à 12 h avec les retards de
+GitHub), **un quart des matchs joués n'avaient jamais été vus avant leur coup d'envoi**,
+donc jamais cotés : on ne les découvrait qu'en médiane 3 h après. La collecte passe donc
+à un créneau toutes les 3 heures.
+
+Pour ne pas multiplier d'autant les requêtes vers statarea, le relevé des cotes
+n'interroge que les matchs jamais cotés et ceux qui commencent dans les 12 heures, où se
+forme la cote de clôture. Mesuré au moment du changement : 18 matchs à interroger au lieu
+de 91.
+
+**Coût.** Une exécution dure 3 à 7 minutes : huit par jour font environ 1 200 minutes par
+mois, sous le quota gratuit de 2 000. Mais la reconstruction de la base rejoue toutes les
+archives à chaque exécution, et sa durée croît avec l'historique : il faudra mettre la
+base en cache entre deux exécutions d'ici un mois environ, sans quoi le quota sera
+dépassé.
+
 ### Déclencheur externe (cron-job.org)
 
 **La planification GitHub fonctionne, mais avec des retards de plusieurs heures.**
@@ -420,6 +439,22 @@ est juste dans **23,9 %** des cas (46 matchs), contre **53,8 %** quand il le sui
 (448 matchs). Règle : remplacer un tel pronostic par l'issue la plus probable selon les
 pourcentages. Test : la ligne « dont matchs joués depuis le 24/09 » de
 `python -m statarea value`, uniquement.
+
+**H1 — état au 29/09.** La partie « justesse » se confirme hors échantillon : sur les
+matchs joués depuis le 24/09, les pronostics contraires sont justes à 33,3 % (30 matchs)
+contre 61,9 % pour les alignés (328). Mais la règle de pari qui en découle **fait perdre
+de l'argent** : sur les 24 pronostics contraires cotés, les suivre tels quels rapportait
++28,8 %, les remplacer par l'issue favorite −26,7 %. Justesse et rentabilité divergent,
+parce que ces pronostics sont surtout des nuls cotés autour de 3,3. Sur 24 paris, rien
+n'est significatif ; H1 est laissée telle qu'inscrite, et n'est pas soutenue.
+
+**H2 — 30/09/2026 — les pronostics contraires, suivis tels quels, sont rentables.**
+Suggérée par le constat ci-dessus, donc sans valeur de preuve sur ces matchs-là. Règle :
+parier le pronostic contraire tel quel, à la cote de clôture. Test : uniquement les
+matchs dont la date UTC est postérieure ou égale au **01/10** (le 30/09 est exclu, une
+partie de ses matchs ayant déjà été vue). **Critère fixé d'avance : aucune conclusion
+avant 200 paris, et seulement si |t| > 2.** Au rythme observé (4 à 5 pronostics
+contraires cotés par jour), 200 paris demandent six semaines environ.
 
 ## Le site
 

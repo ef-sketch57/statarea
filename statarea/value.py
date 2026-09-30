@@ -64,6 +64,29 @@ def argmax_selection(p1, px, p2) -> Optional[str]:
     return best[0] if len(best) == 1 else None
 
 
+# Hypothese H2, PRE-ENREGISTREE le 2026-09-30, avant les matchs qui la testeront.
+# Constat qui l'a suggeree (donc sans valeur de preuve) : sur 24 pronostics
+# contraires joues du 24 au 29/09, les suivre tels quels rapportait +28,8 %,
+# alors que la regle H1 (les remplacer par l'issue favorite) perdait -26,7 %.
+# Ces pronostics sont surtout des nuls, cotes autour de 3,3 : justes une fois
+# sur trois, ils peuvent quand meme etre rentables.
+# Regle : parier le pronostic contraire tel quel, a la cote de cloture.
+# Test : uniquement les matchs dont la date UTC est posterieure ou egale a
+# H2_SINCE - le 30/09 est exclu, une partie de ses matchs ayant deja ete vue.
+# Critere fixe d'avance : conclusion seulement a partir de 200 paris, et
+# seulement si |t| > 2. Aucune conclusion avant, quel que soit le chiffre.
+H2_SINCE = "2026-10-01"
+H2_MIN_BETS = 200
+
+
+def is_contrary(prediction, p1, px, p2) -> bool:
+    """Pronostic simple qui contredit le pourcentage strictement le plus haut."""
+    if prediction not in SINGLES:
+        return False
+    best = argmax_selection(p1, px, p2)
+    return best is not None and best != prediction
+
+
 def corrected_prediction(prediction, p1, px, p2) -> Optional[str]:
     """Le pronostic, sauf s'il contredit les pourcentages : on suit alors ceux-ci."""
     if prediction not in SINGLES:
@@ -160,6 +183,8 @@ def evaluate(conn: sqlite3.Connection, since: Optional[str] = None,
         "statarea_double": Result("pronostic statarea (doubles chances, cote reconstituee)"),
         "corrige": Result("pronostic corrige (pre-enregistre le 24/09)"),
         "corrige_hors_echantillon": Result("  dont matchs joues depuis le 24/09"),
+        "contraires": Result("pronostics contraires tels quels (H2)"),
+        "contraires_hors_echantillon": Result("  dont matchs joues depuis le 01/10"),
         "favori": Result("temoin : toujours le favori"),
         "domicile": Result("temoin : toujours le domicile"),
     }
@@ -189,6 +214,14 @@ def evaluate(conn: sqlite3.Connection, since: Optional[str] = None,
             out["corrige"].returns.append(ret)
             if m["match_date"] >= PREREGISTERED_SINCE:
                 out["corrige_hors_echantillon"].returns.append(ret)
+
+        if is_contrary(pred, m["p1"], m["px"], m["p2"]):
+            cote = odds_for(odds, pred)
+            if cote:
+                ret = cote - 1 if wins(pred, outcome) else -1.0
+                out["contraires"].returns.append(ret)
+                if m["match_date"] >= H2_SINCE:
+                    out["contraires_hors_echantillon"].returns.append(ret)
 
         if m["favorite"]:
             sel = "1" if m["favorite"] == "home" else "2"
