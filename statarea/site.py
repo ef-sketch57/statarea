@@ -63,12 +63,20 @@ def long_date(iso: str) -> str:
     return f"{JOURS[d.weekday()]} {d.day} {MOIS[d.month - 1]}"
 
 
-def upcoming(conn: sqlite3.Connection, today: str, limit_days: int = 7) -> list[sqlite3.Row]:
+def upcoming(conn: sqlite3.Connection, today: str, limit_days: int = 7,
+             now: Optional[datetime] = None) -> list[sqlite3.Row]:
+    """Matchs pas encore COMMENCES.
+
+    L'absence de score ne suffit pas : statarea met une douzaine d'heures a
+    publier les resultats, et un match deja joue restait affiche "a venir".
+    """
+    now = now or datetime.now(timezone.utc)
     return conn.execute(
         """SELECT * FROM matches
            WHERE match_date >= ? AND outcome IS NULL
+             AND (kickoff IS NULL OR match_date || 'T' || kickoff > ?)
            ORDER BY match_date, kickoff, country, home""",
-        (today,),
+        (today, now.strftime("%Y-%m-%dT%H:%M")),
     ).fetchall()
 
 

@@ -254,3 +254,18 @@ class TestTimezone(unittest.TestCase):
         page = self._page("GMT 0").replace("<div class='gmt'>GMT 0</div>", "")
         m = parse_page(page)[0]
         self.assertEqual((m.match_date, m.kickoff), ("2026-09-22", "21:00"))
+
+
+class TestSiteUpcoming(unittest.TestCase):
+    def test_started_matches_are_not_listed(self):
+        """Un match commence mais pas encore score ne doit pas etre affiche 'a venir'."""
+        from datetime import datetime, timezone
+        from statarea import site
+        conn = db.connect(":memory:")
+        db.upsert_matches(conn, [
+            _match(match_id="a", home="A", away="B", kickoff="12:00", match_date="2026-09-30"),
+            _match(match_id="b", home="C", away="D", kickoff="18:00", match_date="2026-09-30"),
+        ])
+        now = datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc)
+        ids = [r["match_id"] for r in site.upcoming(conn, "2026-09-30", now=now)]
+        self.assertEqual(ids, ["b"])
