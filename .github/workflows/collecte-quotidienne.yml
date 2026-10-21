@@ -43,12 +43,37 @@ jobs:
       - name: Tests
         run: python -m unittest discover -s tests
 
-      - name: Reconstruction de la base depuis les archives
-        # Le runner repart d'une base vide. Sans cette etape, le rapport ne
-        # connaitrait que la fenetre de 7 jours et les cotes du passage en
-        # cours : un match joue hier n'aurait jamais sa cote d'avant-match, et
-        # le tableau de rentabilite resterait vide a perpetuite.
-        run: python -m statarea reparse
+      - name: Restauration de la base en cache
+        # La reconstruction complete rejouait toutes les archives a chaque
+        # execution : 530 s le 21/10, et la duree mediane d'une execution avait
+        # double en trois semaines. La base est donc conservee d'une execution a
+        # l'autre, et seuls les nouveaux instantanes sont rejoues.
+        #
+        # L'empreinte du code fait partie de la cle : si les regles de parsing
+        # changent, aucun cache ne correspond et la base est reconstruite de
+        # zero. Les archives restent la source de verite.
+        uses: actions/cache/restore@v4
+        with:
+          path: data/statarea.db
+          key: base-${{ hashFiles('statarea/**/*.py') }}-${{ github.run_id }}
+          restore-keys: |
+            base-${{ hashFiles('statarea/**/*.py') }}-
+
+      - name: Mise a jour de la base depuis les archives
+        # Incremental : ne rejoue que les instantanes absents de la base. Repasse
+        # en reconstruction complete si la base est vide, ou si un instantane
+        # plus ancien que ceux deja traites apparait (l'ordre de rejeu changerait
+        # les valeurs figees a la premiere observation).
+        run: python -m statarea reparse --incremental
+
+      - name: Sauvegarde de la base en cache
+        # Sauvegardee ici, avant la collecte : le cache correspond alors
+        # exactement a des archives deja commitees. Les instantanes de cette
+        # execution seront rejoues, une seule fois, par la suivante.
+        uses: actions/cache/save@v4
+        with:
+          path: data/statarea.db
+          key: base-${{ hashFiles('statarea/**/*.py') }}-${{ github.run_id }}
 
       - name: Collecte de la fenetre disponible
         run: python -m statarea scrape --window 3 --delay "${{ inputs.delay || '5' }}"

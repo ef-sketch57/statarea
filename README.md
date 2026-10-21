@@ -115,11 +115,24 @@ n'interroge que les matchs jamais cotés et ceux qui commencent dans les 12 heur
 forme la cote de clôture. Mesuré au moment du changement : 18 matchs à interroger au lieu
 de 91.
 
-**Coût.** Une exécution dure 3 à 7 minutes : huit par jour font environ 1 200 minutes par
-mois, sous le quota gratuit de 2 000. Mais la reconstruction de la base rejoue toutes les
-archives à chaque exécution, et sa durée croît avec l'historique : il faudra mettre la
-base en cache entre deux exécutions d'ici un mois environ, sans quoi le quota sera
-dépassé.
+**Coût et cache.** Reconstruire la base en rejouant toutes les archives à chaque
+exécution devenait le poste dominant : 530 secondes le 21/10 pour 735 instantanés, et une
+durée médiane d'exécution passée de 5 à 10 minutes en trois semaines. Depuis, la base est
+**conservée entre deux exécutions** (cache GitHub Actions) et `reparse --incremental` ne
+rejoue que les instantanés qu'elle n'a pas encore traités (table `snapshots_done`).
+
+Deux garde-fous garantissent qu'une base incrémentale reste identique à une reconstruction
+complète :
+
+- l'empreinte du code fait partie de la clé du cache : si les règles de parsing changent,
+  aucun cache ne correspond et la base est reconstruite de zéro ;
+- si un nouvel instantané est plus ancien qu'un instantané déjà traité de la même date,
+  l'ordre de rejeu changerait les valeurs figées à la première observation : la base est
+  alors reconstruite entièrement.
+
+Vérifié par des tests et sur les vraies archives : 982 matchs, base incrémentale et
+reconstruction complète strictement identiques. `python -m statarea reparse` sans option
+reste la reconstruction complète, depuis les seules archives.
 
 ### Déclencheur externe (cron-job.org)
 

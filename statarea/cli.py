@@ -23,7 +23,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from . import db, odds, report, scraper, site
-from .parser import ParseError
+from .parser import ParseError, parse_page
 from .scraper import FetchError
 
 
@@ -53,6 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("reparse", help="re-parse les archives locales, sans aucune requete")
     _add_common(p)
     p.add_argument("--raw-dir", default=str(scraper.RAW_DIR))
+    p.add_argument("--incremental", action="store_true",
+                   help="ne rejouer que les instantanes absents de la base")
+    p.add_argument("--odds-dir", default=str(odds.ODDS_DIR))
 
     p = sub.add_parser("recompute", help="rejoue les regles derivees sur la base existante")
     _add_common(p)
@@ -161,23 +164,70 @@ def cmd_scrape(args) -> int:
     return 1 if failures == len(days) else 0
 
 
+def plan_reparse(conn, raw_dir, incremental: bool) -> tuple[list, bool]:
+    """Instantanes a rejouer, et s'il faut repartir d'une base vide.
+
+    En mode incremental, seuls les instantanes absents de snapshots_done sont
+    rejoues. C'est equivalent a une reconstruction complete a une condition :
+    qu'aucun nouvel instantane ne soit ANTERIEUR a un instantane deja traite de
+    la meme date, sinon l'ordre de rejeu - donc les valeurs figees a la premiere
+    observation - differerait. Dans ce cas, on reconstruit tout.
+    """
+    every = list(scraper.iter_snapshots(raw_dir))
+    if not incremental:
+        return every, True
+
+    done = db.done_snapshots(conn)
+    if not done:
+        return every, True
+
+    latest_done: dict[str, str] = {}
+    for day, path in every:
+        key = scraper.snapshot_key(path, raw_dir)
+        if key in done:
+            latest_done[day] = max(latest_done.get(day, ""), path.name)
+
+    todo = []
+    for day, path in every:
+        key = scraper.snapshot_key(path, raw_dir)
+        if key in done:
+            continue
+        if path.name < latest_done.get(day, ""):
+            print(f"  instantane anterieur a un instantane deja traite ({key}) : "
+                  "reconstruction complete.")
+            return every, True
+        todo.append((day, path))
+    return todo, False
+
+
 def cmd_reparse(args) -> int:
     conn = db.connect(args.db)
+    todo, full = plan_reparse(conn, args.raw_dir, args.incremental)
+    if full:
+        db.reset(conn)
+    mode = "complete" if full else "incrementale"
+    print(f"Reconstruction {mode} : {len(todo)} instantane(s) a rejouer.")
+
     total_new = total_upd = 0
-    for day, matches in scraper.reparse_archive(args.raw_dir):
-        if not matches:
-            continue
-        new, upd = db.upsert_matches(conn, matches)
-        total_new += new
-        total_upd += upd
-        print(f"  {day}  {len(matches):4} matchs  +{new} nouveaux, {upd} completes")
+    for day, path in todo:
+        try:
+            matches = parse_page(scraper.read_archive(path), expected_date=day)
+        except ParseError as exc:
+            print(f"  ! {day} ({path.name}): {exc}")
+            matches = []
+        if matches:
+            new, upd = db.upsert_matches(conn, matches)
+            total_new += new
+            total_upd += upd
+            print(f"  {day}  {len(matches):4} matchs  +{new} nouveaux, {upd} completes")
+        db.mark_snapshot(conn, scraper.snapshot_key(path, args.raw_dir))
     print(f"\nRe-parse termine : +{total_new} nouveaux, {total_upd} completes.")
 
     # Les cotes aussi : sans elles, une base reconstruite (job GitHub, build du
     # site) ne connait que les cotes du passage en cours, jamais les cotes
-    # d'avant-match des matchs joues depuis.
+    # d'avant-match des matchs joues depuis. Rechargement idempotent et rapide.
     loaded = 0
-    for day, records in odds.iter_archive():
+    for day, records in odds.iter_archive(args.odds_dir):
         loaded += db.upsert_odds(conn, records)
     print(f"Cotes rechargees depuis data/odds/ : {loaded} releve(s).")
     return 0

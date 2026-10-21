@@ -126,3 +126,76 @@ class TestSnapshots(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestIncrementalReparse(unittest.TestCase):
+    """La base mise en cache et completee doit etre IDENTIQUE a une base
+    reconstruite de zero : sinon le cache fausserait silencieusement l'analyse."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.raw, self.odds = root / "raw", root / "odds"
+        self.raw.mkdir(); self.odds.mkdir()
+        self.root = root
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _at(self, day, hour):
+        return datetime(2026, 9, day, hour, tzinfo=timezone.utc)
+
+    def _reparse(self, dbfile, incremental):
+        from statarea.cli import main
+        args = ["reparse", "--db", str(dbfile), "--raw-dir", str(self.raw),
+                "--odds-dir", str(self.odds)]
+        if incremental:
+            args.append("--incremental")
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            main(args)
+        return out.getvalue()
+
+    def _dump(self, dbfile):
+        conn = db.connect(dbfile)
+        return [tuple(r) for r in conn.execute(
+            """SELECT match_id, match_date, kickoff, home, away, prediction, p1, px, p2,
+                      home_score, away_score, outcome, favorite, surprise, upset
+               FROM matches ORDER BY match_id""")]
+
+    def test_incremental_equals_full_rebuild(self):
+        cache = self.root / "cache.db"
+        scraper.archive("2026-09-19", page(("Roma", "Inter"), ("Lazio", "Napoli")), self.raw, self._at(19, 10))
+        self._reparse(cache, incremental=True)          # premiere execution : complete
+
+        # Execution suivante : nouveaux instantanes, dont un score et un match retire.
+        scraper.archive("2026-09-19", page(("Roma", "Inter"), ("Milan", "Juve"), scores=True),
+                        self.raw, self._at(19, 14))
+        p20 = page(("Atalanta", "Torino")).replace("2026-09-19", "2026-09-20")
+        scraper.archive("2026-09-20", p20, self.raw, self._at(19, 14))
+        out = self._reparse(cache, incremental=True)
+        self.assertIn("incrementale : 2 instantane", out)
+
+        full = self.root / "full.db"
+        self._reparse(full, incremental=False)
+        self.assertEqual(self._dump(cache), self._dump(full))
+        self.assertEqual(len(self._dump(full)), 4)
+
+    def test_nothing_new_replays_nothing(self):
+        cache = self.root / "cache.db"
+        scraper.archive("2026-09-19", page(("Roma", "Inter")), self.raw, self._at(19, 10))
+        self._reparse(cache, incremental=True)
+        self.assertIn("incrementale : 0 instantane", self._reparse(cache, incremental=True))
+
+    def test_an_older_snapshot_forces_a_full_rebuild(self):
+        """Un instantane plus ancien que ceux deja traites changerait l'ordre de
+        rejeu, donc les valeurs figees : on reconstruit tout."""
+        cache = self.root / "cache.db"
+        scraper.archive("2026-09-19", page(("Roma", "Inter")), self.raw, self._at(19, 14))
+        self._reparse(cache, incremental=True)
+        scraper.archive("2026-09-19", page(("Roma", "Inter"), ("Lazio", "Napoli")), self.raw, self._at(19, 10))
+        out = self._reparse(cache, incremental=True)
+        self.assertIn("complete", out)
+        full = self.root / "full.db"
+        self._reparse(full, incremental=False)
+        self.assertEqual(self._dump(cache), self._dump(full))

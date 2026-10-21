@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS odds (
     PRIMARY KEY (match_id, fetched_at)
 );
 CREATE INDEX IF NOT EXISTS idx_odds_match ON odds(match_id);
+
+-- Instantanes HTML deja rejoues dans cette base. Permet a une base conservee
+-- entre deux executions (cache) de ne traiter que les nouveaux.
+CREATE TABLE IF NOT EXISTS snapshots_done (
+    path        TEXT PRIMARY KEY,   -- relatif a data/raw
+    processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 ODDS_COLS = ("o1", "ox", "o2", "oht1", "ohtx", "oht2",
@@ -227,6 +234,23 @@ def latest_odds(conn: sqlite3.Connection, match_id: str) -> Optional[sqlite3.Row
     return conn.execute(
         "SELECT * FROM odds WHERE match_id = ? ORDER BY fetched_at DESC LIMIT 1",
         (match_id,)).fetchone()
+
+
+def done_snapshots(conn: sqlite3.Connection) -> set[str]:
+    return {r[0] for r in conn.execute("SELECT path FROM snapshots_done")}
+
+
+def mark_snapshot(conn: sqlite3.Connection, key: str) -> None:
+    with conn:
+        conn.execute("INSERT OR IGNORE INTO snapshots_done (path) VALUES (?)", (key,))
+
+
+def reset(conn: sqlite3.Connection) -> None:
+    """Vide la base, pour une reconstruction complete depuis les archives."""
+    with conn:
+        conn.execute("DELETE FROM matches")
+        conn.execute("DELETE FROM odds")
+        conn.execute("DELETE FROM snapshots_done")
 
 
 def count(conn: sqlite3.Connection, where: str = "", params: tuple = ()) -> int:

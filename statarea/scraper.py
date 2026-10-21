@@ -188,6 +188,20 @@ def collect_day(
     return parse_page(html, expected_date=day)
 
 
+def snapshot_key(path: Path, raw_dir: Path | str = RAW_DIR) -> str:
+    """Identifiant stable d'un instantane : son chemin relatif a data/raw."""
+    return Path(path).relative_to(Path(raw_dir)).as_posix()
+
+
+def iter_snapshots(raw_dir: Path | str = RAW_DIR) -> Iterator[tuple[str, Path]]:
+    """Tous les instantanes, dans l'ordre canonique de rejeu : par date, puis
+    du plus ancien au plus recent. C'est cet ordre qui donne son sens aux
+    colonnes figees a la premiere observation."""
+    for day in archived_days(raw_dir):
+        for path in snapshots(day, raw_dir):
+            yield day, path
+
+
 def reparse_archive(raw_dir: Path | str = RAW_DIR) -> Iterator[tuple[str, list[Match]]]:
     """Re-parse toutes les archives locales, sans aucune requete reseau.
 
