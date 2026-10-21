@@ -132,6 +132,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top", type=int, default=12)
     p.add_argument("--test-from", type=int, help="premiere saison jouee hors echantillon")
 
+    p = sub.add_parser("h3", help="hypothese H3 : le marche hors des grands championnats")
+    _add_common(p)
+
     p = sub.add_parser("leagues", help="calibration du marche par championnat, sur l'historique")
     p.add_argument("--dir", default=str(history.HISTORY_DIR))
     p.add_argument("--test-from", type=int, help="premiere saison jouee hors echantillon")
@@ -392,6 +395,12 @@ def cmd_history(args) -> int:
     return 0
 
 
+def cmd_h3(args) -> int:
+    from . import h3
+    print(h3.build_report(db.connect(args.db)))
+    return 0
+
+
 def cmd_leagues(args) -> int:
     print(report.build_league_report(history.load(args.dir), test_from=args.test_from))
     return 0
@@ -405,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
         "report": cmd_report, "residual": cmd_residual, "odds": cmd_odds,
         "value": cmd_value, "divergence": cmd_divergence,
         "history-fetch": cmd_history_fetch, "history": cmd_history,
-        "leagues": cmd_leagues,
+        "leagues": cmd_leagues, "h3": cmd_h3,
     }[args.command](args)
 
 

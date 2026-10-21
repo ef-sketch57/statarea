@@ -470,6 +470,25 @@ partie de ses matchs ayant déjà été vue). **Critère fixé d'avance : aucune
 avant 200 paris, et seulement si |t| > 2.** Au rythme observé (4 à 5 pronostics
 contraires cotés par jour), 200 paris demandent six semaines environ.
 
+**H3 — 21/10/2026 — hors des grands championnats, le marché se trompe davantage.**
+Suggérée par l'historique (aucune propension par équipe, un défaut par championnat trop
+faible depuis 2018), et non par les matchs qui la testeront. Comparaison, sur la
+collecte statarea (même bookmaker, même période), entre les compétitions absentes de
+football-data et les 38 qui y figurent (liste dans `statarea/h3.py`) :
+
+- **H3a** : l'outsider y gagne plus souvent que sa cote ne l'annonce ;
+- **H3b** : le favori y échoue (nul ou défaite) plus souvent qu'annoncé.
+
+Test : uniquement les matchs dont la date UTC est postérieure ou égale au **22/10**,
+avec une cote de clôture et un favori désigné par le marché. Aucune exclusion dans les
+compétitions non couvertes (coupes, amicaux et féminines compris). **Critère fixé
+d'avance : aucune conclusion avant 2 000 matchs non couverts et 300 couverts ; l'écart
+« observé − annoncé » entre les deux groupes doit dépasser z = 2,5** (deux tests, seuil
+de Bonferroni). La rentabilité est rapportée à titre d'information et ne se conclut
+qu'avec t > 2 sur le ROI lui-même. Au rythme actuel (environ 110 matchs non couverts
+cotés par jour), il faut à peu près trois semaines. Suivi : `python -m statarea h3`,
+également dans le résumé de chaque collecte.
+
 ## Fidélité à la probabilité, par équipe (historique)
 
 statarea ne sert que ±3 jours : un mois de collecte donne une médiane de

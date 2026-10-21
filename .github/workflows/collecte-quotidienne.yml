@@ -129,5 +129,6 @@ jobs:
             python -m statarea residual --min 5
             python -m statarea residual --min 5 --baseline market
             python -m statarea value
+            python -m statarea h3
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
