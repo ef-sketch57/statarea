@@ -22,7 +22,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from . import db, odds, report, scraper, site
+from . import db, history, odds, report, scraper, site
 from .parser import ParseError, parse_page
 from .scraper import FetchError
 
@@ -113,6 +113,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ne garder que les matchs dont la marge du favori atteint ce seuil")
     p.add_argument("--since")
     p.add_argument("--until")
+
+    p = sub.add_parser("history-fetch",
+                       help="telecharge l'historique football-data.co.uk (resultats et cotes)")
+    p.add_argument("--dest", default=str(history.HISTORY_DIR))
+    p.add_argument("--first", type=int, default=history.FIRST_SEASON,
+                   help="premiere saison, annee de debut (defaut: 2005)")
+    p.add_argument("--last", type=int, help="derniere saison (defaut: la saison en cours)")
+    p.add_argument("--delay", type=float, default=1.0)
+    p.add_argument("--min-files", type=int, default=50,
+                   help="echouer si moins de N fichiers sont disponibles au total")
 
     return parser
 
@@ -347,6 +357,22 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_history_fetch(args) -> int:
+    stats = history.download(args.dest, args.first, args.last, args.delay)
+    print(f"historique : {stats['written']} fichier(s) ecrit(s), {stats['unchanged']} inchange(s), "
+          f"{stats['missing']} absent(s) (404), {stats['failed']} echec(s)")
+    available = stats["written"] + stats["unchanged"]
+    if available < args.min_files:
+        print(f"seulement {available} fichier(s) disponible(s) : telechargement juge en echec",
+              file=sys.stderr)
+        return 1
+    s = history.summary(history.load(args.dest))
+    print(f"{s['matches']} matchs, {s['teams']} equipes, {s['countries']} pays, "
+          f"{s['first']} -> {s['last']}")
+    print("cotes retenues : " + ", ".join(f"{k} {v}" for k, v in sorted(s["sources"].items())))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     return {
@@ -354,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         "show": cmd_show, "dates": cmd_dates, "site": cmd_site,
         "report": cmd_report, "residual": cmd_residual, "odds": cmd_odds,
         "value": cmd_value, "divergence": cmd_divergence,
+        "history-fetch": cmd_history_fetch,
     }[args.command](args)
 
 

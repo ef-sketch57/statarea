@@ -1,0 +1,60 @@
+name: Historique football-data
+
+# Execution ponctuelle, a la demande : recupere les resultats et les cotes de
+# football-data.co.uk depuis 2005 et les archive dans data/history/. Relancer
+# ne coute rien : un fichier inchange ne produit aucun commit. Utile en cours
+# de saison pour ajouter les journees recentes.
+on:
+  workflow_dispatch:
+    inputs:
+      first:
+        description: "Premiere saison (annee de debut)"
+        default: "2005"
+
+permissions:
+  contents: write
+
+# Meme groupe que la collecte quotidienne : les deux poussent sur la meme
+# branche, autant ne jamais les faire se croiser.
+concurrency:
+  group: collecte
+  cancel-in-progress: false
+
+jobs:
+  historique:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Tests
+        run: python -m unittest discover -s tests
+
+      - name: Telechargement
+        # ~500 fichiers a une requete par seconde : une dizaine de minutes.
+        run: python -m statarea history-fetch --first "${{ inputs.first || '2005' }}" --delay 1
+
+      - name: Archivage
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/history
+          if git diff --cached --quiet; then
+            echo "Historique deja a jour."
+            exit 0
+          fi
+          du -sh data/history
+          git commit -m "Historique football-data du $(date -u +%Y-%m-%d)"
+          for i in 1 2 3; do
+            git pull --rebase origin "${{ github.ref_name }}" && \
+              git push origin "HEAD:${{ github.ref_name }}" && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
