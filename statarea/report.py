@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from typing import Optional
 
@@ -298,5 +299,123 @@ def build_divergence_report(conn: sqlite3.Connection) -> str:
 
     lines.append("  Un ecart positif en bas et negatif en haut signe une COMPRESSION : le")
     lines.append("  modele gonfle les issues improbables et sous-estime les favoris nets.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_history_report(matches: list, recent: int = 3, min_all: int = 50,
+                         min_recent: int = 20, top: int = 12,
+                         test_from: Optional[int] = None) -> str:
+    """Fidelite a la probabilite par equipe, sur l'historique football-data."""
+    from . import fidelity, history
+
+    lines = ["=" * 96, "  FIDELITE A LA PROBABILITE - historique football-data.co.uk", "=" * 96, ""]
+    if not matches:
+        return "\n".join(lines + ["  Aucun historique : lancez le workflow 'Historique football-data'.", ""])
+
+    s = history.summary(matches)
+    rows = fidelity.rows_of(matches)
+    seasons = s["seasons"]
+    last = seasons[-1]
+    test_from = test_from if test_from is not None else seasons[0] + fidelity.BT_WINDOW + 2
+    lines.append(f"  {s['matches']} matchs, {s['teams']} equipes, {s['countries']} pays, "
+                 f"{s['first']} -> {s['last']}")
+    lines.append("  cotes : " + ", ".join(f"{k} {v}" for k, v in
+                                          sorted(s["sources"].items(), key=lambda kv: -kv[1])))
+    lines.append(f"  {len(rows) // 2} matchs avec un favori designe (les autres : nul en tete du marche)")
+    lines.append("")
+
+    cal = fidelity.fit_calibration(rows)
+    names = {"favorite": ("FAVORITE", "le favori ne gagne pas (nul ou defaite)"),
+             "underdog": ("OUTSIDER", "l'outsider gagne")}
+
+    lines.append("-" * 96)
+    lines.append("  1. LE MARCHE EST-IL BIEN CALIBRE ?")
+    lines.append("-" * 96)
+    for role in fidelity.ROLES:
+        rr = [r for r in rows if r.role == role]
+        obs = sum(r.hit for r in rr) / len(rr)
+        exp = sum(r.p for r in rr) / len(rr)
+        lines.append(f"  {names[role][1]:42} observe {obs * 100:5.1f}%   annonce {exp * 100:5.1f}%"
+                     f"   ecart {(obs - exp) * 100:+.1f} pts")
+    lines.append("  Les ecarts residuels (biais favori-outsider, pays) sont corriges avant tout")
+    lines.append("  calcul par equipe : sinon on classerait le biais, pas les equipes.")
+    lines.append("")
+
+    lines.append("-" * 96)
+    lines.append("  2. LES EQUIPES DIFFERENT-ELLES REELLEMENT ?   (dispersion des z, 1.00 = pur hasard)")
+    lines.append("-" * 96)
+    recent_rows = [r for r in rows if r.season > last - recent]
+    for role in fidelity.ROLES:
+        for label, rs, mn in (("toute la periode", rows, min_all),
+                              (f"{recent} dernieres saisons", recent_rows, min_recent)):
+            d = fidelity.dispersion(fidelity.team_scores(rs, cal, role, mn).values())
+            if d["sd"] is None:
+                lines.append(f"  {names[role][0]:9} {label:22} : {d['verdict']}")
+                continue
+            lines.append(f"  {names[role][0]:9} {label:22} : sd {d['sd']:.2f} (+/- {2 * d['se']:.2f})"
+                         f"  {d['teams']:4} equipes >= {mn} matchs  -> {d['verdict']}")
+            lines.append(f"  {'':9} {'':22}   ecart reel entre equipes ~ {d['tau'] * 100:.1f} pts/match ;"
+                         f" |z|>2 : {d['beyond_2']} (hasard seul : {d['expected_beyond_2']:.0f})")
+    lines.append("")
+
+    lines.append("-" * 96)
+    lines.append("  3. CA DURE-T-IL ?   (correlation du z d'une saison a la suivante, meme equipe)")
+    lines.append("-" * 96)
+    for role in fidelity.ROLES:
+        p = fidelity.persistence(rows, cal, role)
+        if p["r"] is None:
+            lines.append(f"  {names[role][0]:9} : echantillon insuffisant")
+            continue
+        verdict = ("persistance significative" if p["significant"]
+                   else "pas de persistance detectable")
+        lines.append(f"  {names[role][0]:9} : r = {p['r']:+.3f} (+/- {2 * p['se']:.3f}) "
+                     f"sur {p['pairs']} paires equipe-saison  -> {verdict}")
+    lines.append("  r = 1 : une equipe garde exactement son ecart. r = 0 : le passe n'annonce rien.")
+    lines.append("")
+
+    lines.append("-" * 96)
+    lines.append(f"  4. EST-CE EXPLOITABLE ?   (saisons {test_from}-{last}, classement sur les "
+                 f"{fidelity.BT_WINDOW} saisons precedentes)")
+    lines.append("-" * 96)
+    lines.append(f"  Regles fixees avant calcul : |z| >= {fidelity.BT_Z:g} sur au moins "
+                 f"{fidelity.BT_MIN_N} matchs du role, mise de 1 a la cote du marche.")
+    lines.append(f"  {'strategie':34} {'paris':>6} {'ROI':>8} {'t':>6} {'temoin':>8} {'ecart':>8} {'t':>6}")
+    bt = fidelity.backtest(rows, test_from)
+    for name, res in bt.items():
+        st, wi = res["strategy"], res["witness"]
+        if not st.n or st.se is None or wi.se is None:
+            lines.append(f"  {name:34} {st.n:>6}   (trop peu de paris)")
+            continue
+        diff = st.roi - wi.roi
+        se_diff = math.sqrt(st.se ** 2 + wi.se ** 2)
+        lines.append(f"  {name:34} {st.n:>6} {st.roi * 100:+7.1f}% {st.roi / st.se:+6.1f} "
+                     f"{wi.roi * 100:+7.1f}% {diff * 100:+7.1f}% {diff / se_diff:+6.1f}")
+    lines.append("  temoin = le meme pari sur tous les matchs du role ; ecart = strategie - temoin.")
+    lines.append("  |t| < 2 : indiscernable du hasard.")
+    lines.append("")
+
+    lines.append("-" * 96)
+    lines.append(f"  5. CLASSEMENTS - {recent} dernieres saisons ({last - recent + 1}-{last}), "
+                 f">= {min_recent} matchs dans le role")
+    lines.append("-" * 96)
+    head = f"  {'equipe':36} {'matchs':>6} {'observe':>8} {'attendu':>8} {'ecart':>8} {'z':>6}"
+    for role, title, reverse in (
+        ("favorite", "Favoris FRAGILES : ne gagnent pas plus souvent qu'annonce", True),
+        ("favorite", "Favoris FIDELES : gagnent plus souvent qu'annonce", False),
+        ("underdog", "Outsiders CREATEURS de surprises", True),
+    ):
+        sc = [t for t in fidelity.team_scores(recent_rows, cal, role, min_recent).values()
+              if t.z is not None]
+        sc.sort(key=lambda t: t.z, reverse=reverse)
+        lines.append(f"  {title}")
+        lines.append(head)
+        for t in sc[:top]:
+            lines.append(f"  {t.label[:36]:36} {t.n:>6} {t.observed / t.n * 100:7.1f}% "
+                         f"{t.expected / t.n * 100:7.1f}% {t.per_match:+7.1f} {t.z:+6.1f}")
+        lines.append("")
+    lines.append("  observe / attendu : frequence de l'evenement du role (surprise subie pour un")
+    lines.append("  favori, victoire pour un outsider), attendu = marche recalibre.")
+    lines.append("  A lire avec les sections 2 a 4 : sans persistance, un classement ne predit rien.")
     lines.append("")
     return "\n".join(lines)

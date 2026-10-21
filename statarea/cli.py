@@ -124,6 +124,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-files", type=int, default=50,
                    help="echouer si moins de N fichiers sont disponibles au total")
 
+    p = sub.add_parser("history", help="fidelite a la probabilite par equipe, sur l'historique")
+    p.add_argument("--dir", default=str(history.HISTORY_DIR))
+    p.add_argument("--recent", type=int, default=3, help="saisons des classements (defaut: 3)")
+    p.add_argument("--min-all", type=int, default=50)
+    p.add_argument("--min-recent", type=int, default=20)
+    p.add_argument("--top", type=int, default=12)
+    p.add_argument("--test-from", type=int, help="premiere saison jouee hors echantillon")
+
     return parser
 
 
@@ -373,6 +381,13 @@ def cmd_history_fetch(args) -> int:
     return 0
 
 
+def cmd_history(args) -> int:
+    print(report.build_history_report(history.load(args.dir), recent=args.recent,
+                                      min_all=args.min_all, min_recent=args.min_recent,
+                                      top=args.top, test_from=args.test_from))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     return {
@@ -380,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         "show": cmd_show, "dates": cmd_dates, "site": cmd_site,
         "report": cmd_report, "residual": cmd_residual, "odds": cmd_odds,
         "value": cmd_value, "divergence": cmd_divergence,
-        "history-fetch": cmd_history_fetch,
+        "history-fetch": cmd_history_fetch, "history": cmd_history,
     }[args.command](args)
 
 
