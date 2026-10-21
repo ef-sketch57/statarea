@@ -532,6 +532,43 @@ bookmakers. Les petites divisions exotiques, nombreuses chez statarea, ont des
 marchés moins liquides ; la collecte quotidienne reste le seul moyen de les
 tester.
 
+### Par championnat (test fixé avant calcul, commit 3b7d8e1)
+
+```bash
+python -m statarea leagues
+```
+
+Même démarche, l'unité étant le championnat (38 championnats). Seul le biais
+favori-outsider global est corrigé : un écart propre à un championnat est
+justement ce qu'on cherche.
+
+- **Des différences réelles existent, mais elles sont petites** : dispersion
+  des z de 1,29 (favori qui ne gagne pas) et 1,62 (outsider qui gagne), pour
+  1,00 attendu. Cela représente environ 0,6 à 0,7 point par match. Exemples :
+  en Scotland League Two, l'outsider gagne 2,8 points plus souvent
+  qu'annoncé ; en Serie A, 1,7 point moins souvent.
+- **Les championnats « supplémentaires », moins suivis, ne sont pas plus mal
+  calibrés** que les grands : leur dispersion est compatible avec le hasard.
+- **Persistance faible** : r = +0,11 ± 0,08 d'une saison à l'autre pour
+  l'outsider, et rien de détectable pour le favori.
+- **Hors échantillon (2010-2026)**, une seule stratégie bat son témoin :
+  parier l'outsider dans les championnats où il a surpris sur les trois
+  saisons précédentes. Elle donne −2,7 % contre −7,0 % (t = +2,3, sur quatre
+  stratégies testées). Elle **perd quand même de l'argent**, et l'effet
+  s'efface avec le temps :
+
+| période | paris | ROI | témoin | écart | t |
+|---|---|---|---|---|---|
+| 2010-2017 | 5 346 | +0,1 % | −6,0 % | +6,1 | +2,3 |
+| 2018-2026 | 5 219 | −5,6 % | −7,8 % | +2,2 | +0,8 |
+
+  (Découpage en deux périodes fait après coup, comme contrôle de stabilité.)
+
+**Conclusion.** Il existait un petit défaut de calibration par championnat
+sur les outsiders. Il suffisait tout juste à compenser la marge avant 2018,
+et le marché l'a largement corrigé depuis. Rien d'exploitable aujourd'hui sur
+ces championnats.
+
 ## Le site
 
 `python -m statarea site` genere un site statique dans `dist/` : les matchs a venir,

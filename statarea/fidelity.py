@@ -200,7 +200,7 @@ def dispersion(scores: Iterable[TeamScore]) -> dict:
     tau2 = sum((r - mr) ** 2 for r in rs) / (k - 1) - noise
 
     if sd > 1 + 2 * se:
-        verdict = "surdispersion : les equipes different reellement"
+        verdict = "surdispersion : differences reelles"
     elif sd < 1 - 2 * se:
         verdict = "sous-dispersion (inattendu)"
     else:
