@@ -73,3 +73,29 @@ class TestFidelity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLeagues(unittest.TestCase):
+    def test_biased_league_is_found_and_bet(self):
+        # Pays B : 16 % des victoires du favori deviennent des nuls, toutes
+        # les saisons. Pays A : marche honnete.
+        ms = simulate(seed=3)
+        rnd = random.Random(5)
+        biased = []
+        for m in ms:
+            if m.country == "B" and rnd.random() < 0.16:
+                fav_home = m.o1 < m.o2
+                fav_won = m.hg > m.ag if fav_home else m.ag > m.hg
+                if fav_won:
+                    m = HistMatch(m.country, m.league, m.season, m.date, m.home, m.away,
+                                  0, 0, m.o1, m.ox, m.o2, m.source)
+            biased.append(m)
+        rows = fidelity.rows_of(biased)
+        cal = fidelity.fit_calibration(rows, by_country=False)
+        sc = fidelity.league_scores(rows, cal, "favorite")
+        self.assertGreater(sc[("B", "L")].z, 3)
+        self.assertLess(sc[("A", "L")].z, sc[("B", "L")].z)
+        self.assertTrue(fidelity.league_persistence(rows, cal, "favorite")["r"] > 0)
+        bt = fidelity.league_backtest(rows, 2014)[("favorite", +1)]
+        self.assertGreater(bt["strategy"].n, 0)
+        self.assertGreater(bt["strategy"].roi, bt["witness"].roi)

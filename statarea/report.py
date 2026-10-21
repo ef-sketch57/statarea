@@ -419,3 +419,83 @@ def build_history_report(matches: list, recent: int = 3, min_all: int = 50,
     lines.append("  A lire avec les sections 2 a 4 : sans persistance, un classement ne predit rien.")
     lines.append("")
     return "\n".join(lines)
+
+
+def build_league_report(matches: list, test_from: Optional[int] = None) -> str:
+    """Calibration du marche par championnat, et sa persistance."""
+    from . import fidelity, history
+
+    lines = ["=" * 96, "  CALIBRATION PAR CHAMPIONNAT - historique football-data.co.uk", "=" * 96, ""]
+    if not matches:
+        return "\n".join(lines + ["  Aucun historique.", ""])
+    rows = fidelity.rows_of(matches)
+    seasons = sorted({r.season for r in rows})
+    test_from = test_from if test_from is not None else seasons[0] + fidelity.LG_WINDOW + 2
+    cal = fidelity.fit_calibration(rows, by_country=False)
+    names = {"favorite": "FAVORI NE GAGNE PAS", "underdog": "OUTSIDER GAGNE"}
+    scores = {role: fidelity.league_scores(rows, cal, role) for role in fidelity.ROLES}
+
+    lines.append("  Seul le biais favori-outsider global est corrige : un ecart propre a un")
+    lines.append("  championnat est exactement ce qu'on cherche.")
+    lines.append("")
+    lines.append(f"  {'championnat':24} {'groupe':7} {'matchs':>7}   {'fav. ne gagne pas':>21}   "
+                 f"{'outsider gagne':>21}")
+    lines.append(f"  {'':24} {'':7} {'':>7}   {'ecart':>8} {'z':>6}       {'ecart':>8} {'z':>6}")
+    keys = sorted(scores["favorite"], key=lambda k: (k[1] not in history.LEAGUES, k))
+    for key in keys:
+        f, u = scores["favorite"][key], scores["underdog"].get(key)
+        grp = "princ." if key[1] in history.LEAGUES else "suppl."
+        lab = f"{key[0]} {key[1]}" if key[1] in history.LEAGUES else key[0]
+        lines.append(f"  {lab[:24]:24} {grp:7} {f.n:>7}   {f.per_match:+7.1f}  {f.z:+6.1f}       "
+                     f"{u.per_match:+7.1f}  {u.z:+6.1f}")
+    lines.append("  ecart en points par match (observe - annonce) ; |z| > 2 = au-dela du hasard.")
+    lines.append("")
+
+    lines.append("-" * 96)
+    lines.append("  LES CHAMPIONNATS DIFFERENT-ILS ?   (dispersion des z, 1.00 = hasard)")
+    lines.append("-" * 96)
+    for role in fidelity.ROLES:
+        for grp, test in (("tous", lambda k: True),
+                          ("principaux", lambda k: k[1] in history.LEAGUES),
+                          ("supplementaires", lambda k: k[1] not in history.LEAGUES)):
+            d = fidelity.dispersion(s for k, s in scores[role].items() if test(k))
+            if d["sd"] is None:
+                continue
+            lines.append(f"  {names[role]:20} {grp:16} sd {d['sd']:.2f} (+/- {2 * d['se']:.2f}) "
+                         f"{d['teams']:3} champ.  ecart reel ~ {d['tau'] * 100:.1f} pts  -> {d['verdict']}")
+    lines.append("")
+
+    lines.append("-" * 96)
+    lines.append("  CA DURE-T-IL ?   (z d'un championnat, d'une saison a la suivante)")
+    lines.append("-" * 96)
+    for role in fidelity.ROLES:
+        p = fidelity.league_persistence(rows, cal, role)
+        if p["r"] is None:
+            continue
+        verdict = "persistance significative" if p["significant"] else "pas de persistance detectable"
+        lines.append(f"  {names[role]:20} r = {p['r']:+.3f} (+/- {2 * p['se']:.3f}) sur {p['pairs']} "
+                     f"paires  -> {verdict}")
+    lines.append("")
+
+    lines.append("-" * 96)
+    lines.append(f"  EST-CE EXPLOITABLE ?   (saisons {test_from}-{seasons[-1]}, classement sur les "
+                 f"{fidelity.LG_WINDOW} saisons precedentes, |z| >= {fidelity.LG_Z:g})")
+    lines.append("-" * 96)
+    labels = {("favorite", +1): "contre le favori la ou il decoit",
+              ("favorite", -1): "avec le favori la ou il tient",
+              ("underdog", +1): "avec l'outsider la ou il surprend",
+              ("underdog", -1): "contre l'outsider la ou il echoue"}
+    lines.append(f"  {'strategie':36} {'champ.':>6} {'paris':>7} {'ROI':>8} {'temoin':>8} "
+                 f"{'ecart':>8} {'t':>6}")
+    for key, res in fidelity.league_backtest(rows, test_from).items():
+        st, wi = res["strategy"], res["witness"]
+        if st.se is None or wi.se is None:
+            lines.append(f"  {labels[key]:36} {res['leagues']:>6} {st.n:>7}   (trop peu de paris)")
+            continue
+        diff = st.roi - wi.roi
+        t = diff / math.sqrt(st.se ** 2 + wi.se ** 2)
+        lines.append(f"  {labels[key]:36} {res['leagues']:>6} {st.n:>7} {st.roi * 100:+7.1f}% "
+                     f"{wi.roi * 100:+7.1f}% {diff * 100:+7.1f}% {t:+6.1f}")
+    lines.append("  champ. = selections championnat-saison cumulees ; temoin = meme pari partout.")
+    lines.append("")
+    return "\n".join(lines)

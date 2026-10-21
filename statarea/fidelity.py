@@ -63,6 +63,7 @@ class Row:
     hit: int                    # 1 si l'evenement a eu lieu
     o_event: float              # cote de l'evenement (double chance synthetique si besoin)
     o_against: float            # cote du contraire
+    league: str = ""            # code football-data (E0, SP1, BRA...)
 
 
 def _dc(a: float, b: float) -> float:
@@ -85,9 +86,9 @@ def rows_of(matches: Iterable[HistMatch]) -> list[Row]:
         fav_won = m.outcome == ("1" if fav_home else "2")
         dog_won = m.outcome == ("2" if fav_home else "1")
         out.append(Row((m.country, fav), "favorite", m.season, m.date,
-                       1 - q_fav, int(not fav_won), _dc(m.ox, o_dog), o_fav))
+                       1 - q_fav, int(not fav_won), _dc(m.ox, o_dog), o_fav, m.league))
         out.append(Row((m.country, dog), "underdog", m.season, m.date,
-                       q_dog, int(dog_won), o_dog, _dc(o_fav, m.ox)))
+                       q_dog, int(dog_won), o_dog, _dc(o_fav, m.ox), m.league))
     return out
 
 
@@ -109,7 +110,7 @@ class Calibration:
         return min(max(p, 0.005), 0.995)
 
 
-def fit_calibration(rows: Iterable[Row]) -> Calibration:
+def fit_calibration(rows: Iterable[Row], by_country: bool = True) -> Calibration:
     rows = list(rows)
     cal = Calibration()
     acc: dict = defaultdict(lambda: [0, 0.0])
@@ -118,6 +119,8 @@ def fit_calibration(rows: Iterable[Row]) -> Calibration:
         a[0] += 1
         a[1] += r.hit - r.p
     cal.by_bin = {k: s / n for k, (n, s) in acc.items() if n >= MIN_BIN}
+    if not by_country:
+        return cal
 
     acc = defaultdict(lambda: [0, 0.0])
     for r in rows:
@@ -323,4 +326,102 @@ def backtest(rows: list[Row], first_season: int, last_season: Optional[int] = No
                 result[name]["witness"].add(profit)
                 if r.team in chosen:
                     result[name]["strategy"].add(profit)
+    return result
+
+
+# --------------------------------------------------------------------------
+# Par championnat
+#
+# Meme demarche, l'unite n'etant plus l'equipe mais le championnat. La
+# calibration ne corrige alors QUE le biais favori-outsider global : un ecart
+# propre a un championnat est precisement ce qu'on cherche.
+#
+# Parametres fixes AVANT le premier calcul (commit separe, anterieur aux
+# resultats) : fenetre de 3 saisons, |z| >= 2, aucun minimum de matchs (un
+# championnat-saison en compte plusieurs centaines).
+
+LG_WINDOW = 3
+LG_Z = 2.0
+
+
+def league_of(r: Row) -> tuple[str, str]:
+    return (r.team[0], r.league)
+
+
+def league_scores(rows: Iterable[Row], cal: Calibration, role: Role,
+                  min_n: int = 1) -> dict[tuple[str, str], TeamScore]:
+    """Comme team_scores, agrege par (pays, championnat)."""
+    out: dict[tuple[str, str], TeamScore] = {}
+    for r in rows:
+        if r.role != role:
+            continue
+        key = league_of(r)
+        p = cal(r)
+        s = out.get(key)
+        if s is None:
+            s = out[key] = TeamScore(key, role)
+        s.n += 1
+        s.observed += r.hit
+        s.expected += p
+        s.variance += p * (1 - p)
+    return {k: v for k, v in out.items() if v.n >= min_n}
+
+
+def league_persistence(rows: list[Row], cal: Calibration, role: Role) -> dict:
+    """Correlation du z d'un championnat d'une saison a la suivante."""
+    by_season: dict[int, list[Row]] = defaultdict(list)
+    for r in rows:
+        if r.role == role:
+            by_season[r.season].append(r)
+    scores = {s: league_scores(rs, cal, role, 50) for s, rs in by_season.items()}
+    xs, ys = [], []
+    for season, leagues in scores.items():
+        nxt = scores.get(season + 1, {})
+        for key, a in leagues.items():
+            b = nxt.get(key)
+            if b is not None and a.z is not None and b.z is not None:
+                xs.append(a.z)
+                ys.append(b.z)
+    r = _pearson(xs, ys)
+    se = 1 / math.sqrt(len(xs) - 3) if len(xs) > 3 else None
+    return {"pairs": len(xs), "r": r, "se": se,
+            "significant": r is not None and se is not None and abs(r) > 2 * se}
+
+
+def league_backtest(rows: list[Row], first_season: int,
+                    window: int = LG_WINDOW, z_min: float = LG_Z) -> dict:
+    """Chaque saison S : les championnats dont l'evenement du role est sorti
+    nettement plus (z >= 2) ou moins (z <= -2) souvent qu'annonce sur les
+    `window` saisons precedentes sont paries dans le meme sens en S.
+
+    Temoin : le meme pari sur tous les matchs de tous les championnats en S.
+    """
+    by_season: dict[int, list[Row]] = defaultdict(list)
+    for r in rows:
+        by_season[r.season].append(r)
+    result = {}
+    for role in ROLES:
+        for sign in (+1, -1):
+            result[(role, sign)] = {"strategy": Ledger(), "witness": Ledger(), "leagues": 0}
+    for season in sorted(by_season):
+        if season < first_season:
+            continue
+        past = [r for s in range(season - window, season) for r in by_season.get(s, [])]
+        if not past:
+            continue
+        cal = fit_calibration([r for r in rows if r.season < season], by_country=False)
+        for role in ROLES:
+            scores = league_scores(past, cal, role)
+            for sign in (+1, -1):
+                chosen = {k for k, s in scores.items() if s.z is not None and sign * s.z >= z_min}
+                res = result[(role, sign)]
+                res["leagues"] += len(chosen)
+                for r in by_season[season]:
+                    if r.role != role:
+                        continue
+                    odds, won = (r.o_event, r.hit) if sign > 0 else (r.o_against, 1 - r.hit)
+                    profit = odds - 1 if won else -1.0
+                    res["witness"].add(profit)
+                    if league_of(r) in chosen:
+                        res["strategy"].add(profit)
     return result
