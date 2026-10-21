@@ -18,6 +18,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Optional
 
+from . import db
+
 BASE_FILTER = "outcome IS NOT NULL AND favorite IS NOT NULL"
 
 
@@ -77,14 +79,14 @@ def team_stats(
     sql = f"""
     WITH roles AS (
         -- l'equipe a domicile
-        SELECT home AS team,
+        SELECT {db.team_sql("home")} AS team,
                favorite = 'home' AS is_fav,
                CASE WHEN favorite = 'home' THEN surprise END AS surprised,
                CASE WHEN favorite = 'away' THEN upset     END AS created
         FROM matches WHERE {where}
         UNION ALL
         -- l'equipe a l'exterieur
-        SELECT away AS team,
+        SELECT {db.team_sql("away")} AS team,
                favorite = 'away' AS is_fav,
                CASE WHEN favorite = 'away' THEN surprise END AS surprised,
                CASE WHEN favorite = 'home' THEN upset     END AS created

@@ -205,6 +205,7 @@ Table `matches`, clé `match_id = date|domicile|extérieur`.
 | `match_date`, `kickoff` | date et heure du coup d'envoi |
 | `country`, `competition` | pays et compétition |
 | `home`, `away` | équipes |
+| `home_country`, `away_country` | pays de chaque équipe, lu dans le lien de comparaison de statarea. Les indices par équipe identifient une équipe par « nom (pays) » : les deux Comunicaciones (Guatemala, Argentine) ne se confondent plus |
 | `prediction` | `1`, `X`, `2`, `1X`, `X2`, `12` |
 | `p1`, `px`, `p2` | pourcentages, colonnes 1 / X / 2 de gauche à droite |
 | `home_score`, `away_score` | score final, `NULL` tant que le match n'est pas joué |
@@ -468,6 +469,68 @@ matchs dont la date UTC est postérieure ou égale au **01/10** (le 30/09 est ex
 partie de ses matchs ayant déjà été vue). **Critère fixé d'avance : aucune conclusion
 avant 200 paris, et seulement si |t| > 2.** Au rythme observé (4 à 5 pronostics
 contraires cotés par jour), 200 paris demandent six semaines environ.
+
+## Fidélité à la probabilité, par équipe (historique)
+
+statarea ne sert que ±3 jours : un mois de collecte donne une médiane de
+3 matchs par équipe, trop peu pour dire quelle équipe suit sa probabilité.
+L'historique vient donc de football-data.co.uk : résultats et cotes 1X2 depuis
+2005, 22 divisions européennes et 16 championnats hors Europe.
+
+```bash
+# sur GitHub : Actions > "Historique football-data" > Run workflow
+# (le domaine n'est pas joignable depuis toutes les machines ; relancer
+#  ne coûte rien, un fichier inchangé ne produit aucun commit)
+python -m statarea history-fetch      # le même téléchargement, en local
+python -m statarea history            # le rapport
+```
+
+Les fichiers bruts sont archivés tels quels dans `data/history/` (gzip
+déterministe). La référence est la cote du **marché**, de clôture Pinnacle
+quand elle existe (71 % des matchs), marge retirée. Le rapport pose quatre
+questions, dans cet ordre :
+
+1. **Le marché est-il calibré ?** Le léger biais favori-outsider et les écarts
+   par pays sont corrigés avant tout calcul par équipe : sinon on classerait
+   le biais, pas les équipes.
+2. **Les équipes diffèrent-elles réellement ?** Dispersion des z, égale à 1
+   si seul le hasard joue, et l'écart réel entre équipes qu'elle implique.
+3. **Est-ce que ça dure ?** Corrélation du z d'une équipe d'une saison à la
+   suivante.
+4. **Est-ce exploitable ?** Chaque saison est jouée avec un classement calculé
+   sur les trois précédentes uniquement (|z| ≥ 2, au moins 20 matchs du rôle),
+   comparé au même pari placé sur tous les matchs. Ces paramètres ont été
+   fixés avant le premier calcul sur les données réelles.
+
+### Résultat au 21/10/2026 (227 494 matchs, 1 214 équipes, 2005-2026)
+
+| question | favori (nul ou défaite) | outsider (victoire) |
+|---|---|---|
+| dispersion des z, ≥ 50 matchs (1,00 = hasard) | 0,99 ± 0,05 (833 équipes) | 0,94 ± 0,05 (983 équipes) |
+| équipes à \|z\| > 2 / attendues par hasard | 40 / 38 | 28 / 45 |
+| écart réel maximal compatible (95 %) | 1,1 pt par match | 0 |
+| persistance saison → saison suivante | r = +0,02 ± 0,02 | r = −0,01 ± 0,02 |
+| persistance 1re → 2e moitié de saison | r = −0,00 ± 0,02 | r = −0,04 ± 0,02 |
+
+Hors échantillon (2010-2026), aucune des quatre stratégies ne se distingue de
+son témoin : par exemple, parier contre les « favoris fragiles » de trois
+saisons précédentes donne −6,5 % sur 3 492 paris, contre −5,4 % pour le même
+pari sur tous les favoris (écart −1,1 %, t = −0,6).
+
+**Conclusion.** Mesurées contre la cote du marché, les équipes ne gardent
+aucune propension propre à décevoir comme favorite ou à surprendre comme
+outsider. Une équipe « toujours favorite qui perd ou concède le nul » existe
+bien dans les classements bruts, mais sa cote l'intègre déjà : le marché
+allonge sa cote, et l'écart restant ne se prolonge pas. Les classements de la
+section 5 du rapport sont donc à lire comme du hasard. La légère
+sous-dispersion des outsiders, et leur corrélation négative à l'intérieur d'une
+saison, vont dans le sens d'un marché qui sur-réagit un peu aux surprises
+récentes. L'effet est minuscule, et il est l'inverse d'une propension.
+
+Limite : l'historique couvre les championnats suivis par les grands
+bookmakers. Les petites divisions exotiques, nombreuses chez statarea, ont des
+marchés moins liquides ; la collecte quotidienne reste le seul moyen de les
+tester.
 
 ## Le site
 

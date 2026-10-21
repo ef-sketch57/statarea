@@ -269,3 +269,20 @@ class TestSiteUpcoming(unittest.TestCase):
         now = datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc)
         ids = [r["match_id"] for r in site.upcoming(conn, "2026-09-30", now=now)]
         self.assertEqual(ids, ["b"])
+
+
+class TestTeamCountries(unittest.TestCase):
+    def _node(self, href):
+        from bs4 import BeautifulSoup
+        return BeautifulSoup(f"<div class='name'><a href='{href}'>X</a></div>", "html.parser").div
+
+    def test_link(self):
+        from statarea.parser import team_countries
+        self.assertEqual(team_countries(self._node(
+            "https://www.statarea.com/compare/teams/Paris+Saint+Germain (France)/Barcelona (Spain)")),
+            ("France", "Spain"))
+        self.assertEqual(team_countries(self._node(
+            "https://www.statarea.com/compare/teams/Nacional (Montevideo) (Uruguay)/Penarol (Uruguay)")),
+            ("Uruguay", "Uruguay"))
+        self.assertEqual(team_countries(self._node("https://www.statarea.com/other")), (None, None))
+        self.assertEqual(team_countries(None), (None, None))

@@ -95,6 +95,11 @@ class TeamResidual:
         return z is not None and abs(z) > 2
 
 
+def _db_team(side: str) -> str:
+    from .db import team_sql
+    return team_sql(side)
+
+
 def _expectation_rows(conn: sqlite3.Connection, role: Role, baseline: Baseline,
                       since: Optional[str], until: Optional[str]) -> list[dict]:
     """Un enregistrement par (equipe, match) : probabilite attendue et issue.
@@ -124,7 +129,8 @@ def _expectation_rows(conn: sqlite3.Connection, role: Role, baseline: Baseline,
         params.append(until)
 
     matches = conn.execute(
-        f"""SELECT match_id, home, away, p1, px, p2, favorite, surprise, upset
+        f"""SELECT match_id, {_db_team("home")} AS home, {_db_team("away")} AS away,
+                   p1, px, p2, favorite, surprise, upset
             FROM matches WHERE {" AND ".join(clauses)}""", params).fetchall()
 
     book = {}

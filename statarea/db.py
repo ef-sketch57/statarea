@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS matches (
     surprise        INTEGER,            -- le favori n'a pas gagne
     upset           INTEGER,            -- l'outsider a gagne
     prediction_hit  INTEGER,            -- la prediction statarea etait bonne
+    home_country    TEXT,               -- pays de l'equipe (homonymes)
+    away_country    TEXT,
     first_seen      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -81,7 +83,8 @@ ODDS_COLS = ("o1", "ox", "o2", "oht1", "ohtx", "oht2",
 FROZEN = ("prediction", "p1", "px", "p2", "match_date", "kickoff")
 
 # Les faits qui se completent au fil des re-scrapes : le score arrive apres.
-REFRESHED = ("sa_id", "country", "competition", "home_score", "away_score")
+REFRESHED = ("sa_id", "country", "competition", "home_score", "away_score",
+             "home_country", "away_country")
 
 # Colonnes entierement recalculees depuis les precedentes, jamais ecrites
 # telles quelles : c'est ce qui garantit qu'une ligne reste coherente quel que
@@ -147,7 +150,18 @@ def connect(path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # Colonnes ajoutees apres coup : une base existante les recoit vides, la
+    # prochaine reconstruction depuis les archives les remplit.
+    have = {r[1] for r in conn.execute("PRAGMA table_info(matches)")}
+    for col in ("home_country", "away_country"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE matches ADD COLUMN {col} TEXT")
     return conn
+
+
+# Identite d'une equipe : son nom suivi de son pays quand on le connait.
+def team_sql(side: str) -> str:
+    return f"{side} || COALESCE(' (' || {side}_country || ')', '')"
 
 
 def upsert_matches(conn: sqlite3.Connection, matches: Iterable[Match]) -> tuple[int, int]:

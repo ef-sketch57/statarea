@@ -62,6 +62,10 @@ class Match:
     surprise: Optional[int]
     upset: Optional[int]
     prediction_hit: Optional[int]
+    # Pays de chaque equipe, lu dans le lien de comparaison : deux equipes
+    # homonymes (Comunicaciones, Nacional...) ne doivent pas se confondre.
+    home_country: Optional[str] = None
+    away_country: Optional[str] = None
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -69,6 +73,21 @@ class Match:
 
 def _text(node) -> Optional[str]:
     return node.get_text(strip=True) if node is not None else None
+
+
+def team_countries(name_node) -> tuple[Optional[str], Optional[str]]:
+    """Pays des deux equipes, depuis le lien 'compare/teams/Hote (Pays)/Visiteur (Pays)'."""
+    link = name_node.find("a") if name_node is not None else None
+    href = link.get("href", "") if link is not None else ""
+    _, sep, tail = href.partition("/compare/teams/")
+    parts = tail.split("/") if sep else []
+    if len(parts) != 2:
+        return None, None
+    out = []
+    for part in parts:
+        m = re.fullmatch(r".*\(([^()]+)\)\s*", part)
+        out.append(m.group(1).strip() if m else None)
+    return out[0], out[1]
 
 
 def _int(value: Optional[str]) -> Optional[int]:
@@ -267,6 +286,7 @@ def parse_page(html: str, expected_date: Optional[str] = None) -> list[Match]:
             if host is None or guest is None:
                 continue
 
+            home_country, away_country = team_countries(host.find("div", class_="name"))
             home = _text(host.find("div", class_="name"))
             away = _text(guest.find("div", class_="name"))
             if not home or not away:
@@ -316,6 +336,8 @@ def parse_page(html: str, expected_date: Optional[str] = None) -> list[Match]:
                     surprise=surprise,
                     upset=upset,
                     prediction_hit=compute_prediction_hit(prediction, outcome),
+                    home_country=home_country,
+                    away_country=away_country,
                 )
             )
 
